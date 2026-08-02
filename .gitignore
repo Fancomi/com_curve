@@ -1,0 +1,7 @@
+# 产物一律可删可重建
+outputs/
+# 源数据（软链接或大文件）手工放，不进库
+inputs/*
+!inputs/.gitkeep
+__pycache__/
+*.pyc

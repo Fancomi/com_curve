@@ -1,0 +1,336 @@
+"""固定深度平面对齐与尺度标定。**这条线所有"为什么"都在这里。**
+
+核心是一个问题：frames.bin 里每帧只有 crop 相机（focal=5000, patch=256, bbox, cam_t）。
+cam_t.z 是单目深度估计，实测这段片子从 51 m 抖到 110 m（帧间最大跳 24 m）。照
+dive-replay-3d 的 video 模式把顶点搬到世界里，刚体平移就带着这份抖动——叠在源视频上
+看不出来（眼睛对齐的是底图里的人），去掉底图做正交渲染，整个人就在横向滑：7 s 附近
+单帧横移 0.44 m。
+
+解法：**固定深度平面**。选一个常数 Z0，人放在这个平面上：
+
+    world_X = (u - W/2) * s
+    world_Y = -(v - H/2) * s        （图像 y 向下，取负得到 Y 向上）
+    s = Z0 / focal                  米每像素，全片常数
+
+u/v 是**该顶点在源视频里的真实投影**（用每帧自己的 crop 相机算，与 overlay 看到的
+一致）。于是重投影 u/v 逐位还原，"3D global 渲染与 2D 投影一致"是构造保证的，不是
+拟合出来的。抖动被隔离在深度方向——而深度本来就是单目拿不到的量，侧视图因此只有
+体厚、没有前后位移，这是诚实的表达。
+
+s 的三个来源（`--scale`）：
+
+  hsmr     每帧 tz/fx 的中位数 = 0.010804。与 HSMR 自己的体尺自洽（mesh 1.77 m 高、
+           投影 154 px，比值对得上），但腾空段 g = -12.1。
+  metrics  metrics.json 的 pixel_to_meter_ratio = 0.008157，来自分析器
+           ref_distance_m=3.0 的标定。独立于 HSMR，腾空段 g = -9.13 —— 差 7%，
+           这是对整条链路的独立校验，所以拿它当默认。
+  gravity  反解出让腾空段恰好 -9.81 的 s = 0.008758。用它报 g 是循环论证，只作对照。
+
+三者相差约 25%：HSMR 的绝对深度与图像标定不一致。一个标量 s 同时决定体尺和轨迹幅度，
+两者不可能都对——这是数据本身的矛盾，不是这里的近似。
+"""
+import numpy as np
+
+from ..common import geometry as G
+from ..common import signal as Sig
+from . import divf
+
+SOURCE_W = 1920.0
+SOURCE_H = 1080.0
+GRAVITY = 9.81
+SCALE_CHOICES = ("metrics", "hsmr", "gravity")
+MODES = ("root", "mesh")
+MODE_DOC = {
+    "root": "pelvis proxy: mean of a fixed vertex set near the anatomical pelvis "
+            "in the rest pose (frames.bin has no real root joint)",
+    "mesh": "homogeneous volume centroid of the skin mesh, per frame",
+}
+
+
+def project_source(local, record):
+    """HSMR local 顶点 -> 源视频像素 (u, v)。
+
+    HSMR 在 patch×patch 的 crop 上以 focal 出图，crop 再线性映回 bbox：
+
+        u_crop = patch/2 + focal * (x + tx) / (z + tz)
+        u_src  = bbox.x + u_crop * bbox.w / patch
+
+    这就是 overlay 里看到的那套投影，逐位一致。
+    """
+    bbox, focal, patch = record["bbox"], record["focal"], record["patch"]
+    tx, ty, tz = record["cam"]
+    points = np.atleast_2d(local)
+    depth = points[:, 2] + tz
+    depth = np.where(np.abs(depth) < 1e-9, np.nan, depth)
+    out = np.column_stack([
+        bbox[0] + (patch * 0.5 + focal * (points[:, 0] + tx) / depth)
+        * bbox[2] / patch,
+        bbox[1] + (patch * 0.5 + focal * (points[:, 1] + ty) / depth)
+        * bbox[3] / patch,
+    ])
+    return out[0] if np.ndim(local) == 1 else out
+
+
+def pelvis_ids(rest, faces, count=48):
+    """rest pose 上靠近解剖骨盆的固定顶点集（全片共用同一组 index）。
+
+    体积重心偏下腹，骨盆比它略高、略靠后。取固定集合而不是每帧重选，才能保证 root
+    曲线的抖动来自姿态而不是选点。
+    """
+    _volume, centre = G.volume_centroid(rest, faces)
+    target = np.array([0.0, centre[1] + 0.08, centre[2] - 0.04])
+    return np.sort(np.argsort(np.linalg.norm(rest - target, axis=1))[:count])
+
+
+def place_on_plane(local, record, scale, scale_hsmr):
+    """一帧顶点 -> 固定深度平面上的 global 坐标（米，Y 向上）。
+
+        X    =  (u - W/2) * s
+        Y_up = -(v - H/2) * s
+        Z    =  local_z 去中位数后 × (s / s_hsmr)
+
+    X/Y 完全由 (u, v) 决定，所以重投影逐位还原。Z 只承载体厚：HSMR local 的单位是
+    它自己那套米（s_hsmr 米每像素），换算到 s 这套单位要乘 s/s_hsmr，人才是等比缩放
+    而不是被压扁。单目拿不到真实前后位移，Z 里因此**不含轨迹**。
+    """
+    pixels = project_source(local, record)
+    ratio = scale / scale_hsmr if scale_hsmr > 1e-12 else 1.0
+    return np.column_stack([
+        (pixels[:, 0] - SOURCE_W * 0.5) * scale,
+        -(pixels[:, 1] - SOURCE_H * 0.5) * scale,
+        (local[:, 2] - np.median(local[:, 2])) * ratio,
+    ])
+
+
+def hsmr_scale(records):
+    """每帧 tz / fx_src 的中位数。fx_src = focal * bbox.w / patch。"""
+    values = [r["cam"][2] / (r["focal"] * r["bbox"][2] / r["patch"])
+              for r in records.values()
+              if r["focal"] * r["bbox"][2] / r["patch"] > 1e-6]
+    if not values:
+        raise SystemExit("无法估计 hsmr 尺度：没有有效帧")
+    return float(np.median(values))
+
+
+def gravity_scale(measured, reference):
+    """让腾空段拟合出 -9.81 的 s。一步闭式，不需要迭代。
+
+    `place_on_plane` 是关于原点的**均匀缩放**：X、Y 都是像素乘 s，Z 是 local_z 乘
+    s/s_hsmr。所以整块几何按 s 等比放大，体积重心随之等比，高度曲线 Y(s) = s·Y(1)，
+    拟合出的加速度 g(s) = s·g(1)。于是 s* = s_ref · 9.81 / |g(s_ref)|。
+
+    先在像素上解一次再套用是不对的——透视投影非线性，"重心的投影"不等于"投影的重心"，
+    那样解出来会落在 -10.2 而不是 -9.81。必须拿真正的体积重心量一次 g 再按比例缩。
+    """
+    if not np.isfinite(measured) or abs(measured) < 1e-9:
+        return float("nan")
+    return float(reference * GRAVITY / abs(measured))
+
+
+def _fill_gaps(series):
+    """线性插值补上 nan，全 nan 时原样返回。拟合前用。"""
+    mask = np.isfinite(series)
+    if mask.all() or not mask.any():
+        return series, mask
+    filled = series.copy()
+    index = np.arange(len(series))
+    filled[~mask] = np.interp(index[~mask], index[mask], series[mask])
+    return filled, mask
+
+
+class Clip:
+    """一段 replay：解析、定尺度、放到平面上、算两条曲线。
+
+    两遍扫：第一遍存 record 与像素投影（与 s 无关），据此定 s；第二遍按 s 放到平面上
+    做体积积分。这样 `--scale gravity` 能在同一条路径里线性解出来，不用先猜后迭。
+    """
+
+    def __init__(self, frames_path, skin_obj, metrics, scale_mode="metrics",
+                 fps=None, trim=8, pelvis_count=48, verbose=True):
+        raw = divf.read(frames_path)
+        self.header = divf.header(raw)
+        self.rest, self.faces = divf.load_obj(skin_obj)
+        self.pelvis = pelvis_ids(self.rest, self.faces, pelvis_count)
+        self.metrics = metrics or {}
+        self.fps = float(fps or self.metrics.get("fps")
+                         or self.header["fps"] or 60.0)
+        self.trim = trim
+        self.count = self.header["n"]
+
+        self.records = {}
+        for index in range(self.count):
+            record = divf.record(raw, self.header, index)
+            if record["usable"]:
+                self.records[index] = record
+        if not self.records:
+            raise SystemExit("没有可用的 mesh 帧")
+
+        self.frames = np.arange(self.count, dtype=np.int32)
+        self.status = np.array([self.records[i]["status"] if i in self.records else 0
+                                for i in range(self.count)], np.int32)
+        self.local = {"root": np.full((self.count, 3), np.nan),
+                      "mesh": np.full((self.count, 3), np.nan)}
+        self.pixels = {"root": np.full((self.count, 2), np.nan),
+                       "mesh": np.full((self.count, 2), np.nan)}
+        for index, record in self.records.items():
+            skin = record["skin"]
+            try:
+                _volume, centre = G.volume_centroid(skin, self.faces)
+            except ValueError:
+                centre = skin.mean(0)
+            self.local["mesh"][index] = centre
+            self.local["root"][index] = skin[self.pelvis].mean(0)
+            for key in MODES:
+                self.pixels[key][index] = project_source(self.local[key][index],
+                                                         record)
+
+        self.flight = self._flight_window()
+        self.scale_hsmr = hsmr_scale(self.records)
+        self.scale_table = {
+            "hsmr": self.scale_hsmr,
+            "metrics": float(self.metrics.get("pixel_to_meter_ratio") or 0.0)
+            or float("nan"),
+            "gravity": float("nan"),
+        }
+        if self.flight is not None:
+            probe = self._place(self.scale_hsmr)
+            self.scale_table["gravity"] = gravity_scale(
+                self._flight_gravity(probe["mesh"]), self.scale_hsmr)
+
+        self.scale_mode = scale_mode
+        self.scale = self.scale_table.get(scale_mode)
+        if self.scale is None or not np.isfinite(self.scale) or self.scale <= 0:
+            raise SystemExit(f"尺度 {scale_mode} 不可用：{self.scale_table}")
+        if verbose:
+            print(f"  尺度({scale_mode}) = {self.scale:.6f} m/px   候选 "
+                  + "  ".join(f"{k}={v:.6f}" for k, v in self.scale_table.items()
+                              if np.isfinite(v)))
+        self.__dict__.update(self._place(self.scale))
+
+    # ---- 内部 ----------------------------------------------------------
+
+    def _flight_window(self):
+        """腾空段（离板 -> 入水），取自 metrics.json 的分析器事件，再收窄到一条弧。
+
+        这条线不自己检测入水：上游分析器已经给了事件帧，重新猜一遍只会引入分歧。
+        但 `jumping_frame` 有时给的是**第一次**下压而不是最后一次离板——20260801 那段
+        的 f245..f440 里含三次弹跳，整段拟合出 g = -1.16（残差 0.88 m），把三条弧当成
+        一条抛物线拟当然错。
+
+        收窄办法：取 `peak_frame` 两侧各自的**最低点**。含最高点的那条弧一定被这两个
+        谷底夹住，而且这个判据没有阈值、不看相邻帧——顶点附近姿态摆动造出的十几个假
+        局部极值和 0.1 px 量级的抖动都影响不到它。20260731 的窗口本来就只有一条弧，
+        收窄前后完全相同（f333..f437，g = -9.62）；20260801 收窄到 f323..f438，
+        g 从 -1.16 变成 -9.04（残差 0.88 m -> 0.03 m）。
+        """
+        summary = self.metrics.get("summary") or {}
+        jump, water = summary.get("jumping_frame"), summary.get("water_entry_frame")
+        if jump is None or water is None or int(water) <= int(jump) + 20:
+            return None
+        low, high = int(jump), int(water)
+        peak = summary.get("peak_frame")
+        if peak is None or not low < int(peak) < high:
+            return (low, high)
+        # 用像素高度：这个方法在定尺度之前就要调（腾空窗口是 --scale gravity 反解的
+        # 输入），那时还没有 global 坐标。global Y = -(v - H/2)·s 是 v 的单调线性映射，
+        # 极值位置逐帧相同。
+        height = -self.pixels["mesh"][:, 1]     # 图像 y 向下，取负得到"越高越大"
+        peak = int(peak)
+        return (low + int(np.nanargmin(height[low:peak + 1])),
+                peak + int(np.nanargmin(height[peak:high + 1])))
+
+    def _place(self, scale):
+        """按给定 s 放置全片。返回 {meshes, root, mesh, volume, valid}。"""
+        out = {"root": np.full((self.count, 3), np.nan),
+               "mesh": np.full((self.count, 3), np.nan),
+               "volume": np.full(self.count, np.nan),
+               "valid": np.zeros(self.count, np.int8),
+               "meshes": [None] * self.count}
+        for index, record in self.records.items():
+            placed = place_on_plane(record["skin"], record, scale, self.scale_hsmr)
+            try:
+                out["volume"][index], out["mesh"][index] = G.volume_centroid(
+                    placed, self.faces)
+            except ValueError:
+                out["mesh"][index] = placed.mean(0)
+            out["root"][index] = placed[self.pelvis].mean(0)
+            out["meshes"][index] = placed
+            out["valid"][index] = 1
+        return out
+
+    def _flight_gravity(self, track):
+        """腾空段切端后的拟合加速度。窗口与 `fit_flight` 报的那个一致。"""
+        span = np.arange(self.flight[0], self.flight[1] + 1)
+        height, mask = _fill_gaps(track[span, 1])
+        if mask.sum() < 2 * self.trim + 3:
+            return float("nan")
+        return Sig.fit_parabola(height[self.trim:len(height) - self.trim],
+                                1.0 / self.fps)[0]
+
+    # ---- 对外 ----------------------------------------------------------
+
+    def body_height(self):
+        first = next((m for m in self.meshes if m is not None), None)
+        return (float(first[:, 1].max() - first[:, 1].min())
+                if first is not None else float("nan"))
+
+    def reprojection_error(self):
+        """把 global 顶点重投影回像素，与第一遍的投影比。
+
+        这是"3D global 渲染与 2D 投影一致"的可执行形式。理论上应当是 0；实测残差来自
+        float32 顶点的舍入，量级 1e-2 px。**不查重心**——透视投影非线性，"重心的投影"
+        不等于"投影的重心"，那个差是真实的几何事实，不是 bug。
+        """
+        worst, total, count = 0.0, 0.0, 0
+        for index, record in self.records.items():
+            placed = self.meshes[index]
+            if placed is None:
+                continue
+            u = SOURCE_W * 0.5 + placed[:, 0] / self.scale
+            v = SOURCE_H * 0.5 - placed[:, 1] / self.scale
+            truth = project_source(record["skin"], record)
+            error = np.hypot(u - truth[:, 0], v - truth[:, 1])
+            worst = max(worst, float(error.max()))
+            total += float(error.sum())
+            count += len(error)
+        return ({"count": count, "mean_px": total / count, "max_px": worst}
+                if count else {"count": 0})
+
+    def fit_flight(self):
+        """腾空段抛物线拟合。单位是米，所以 g 可以直接和 -9.81 比。"""
+        out = {"trim_frames": self.trim, "flight": list(self.flight or []),
+               "per_curve": {}}
+        if self.flight is None:
+            return out
+        span = np.arange(self.flight[0], self.flight[1] + 1)
+        dt = 1.0 / self.fps
+        for key in MODES:
+            series = getattr(self, key)[span, 1]
+            height, mask = _fill_gaps(series)
+            if mask.sum() < 5:
+                continue
+            gravity, rms = Sig.fit_parabola(height, dt)
+            core = height[self.trim:len(height) - self.trim]
+            trimmed = (Sig.fit_parabola(core, dt) if len(core) >= 3
+                       else (float("nan"), float("nan")))
+            out["per_curve"][key] = {
+                "gravity_mps2": round(float(gravity), 3),
+                "fit_rms_m": round(float(rms), 4),
+                "gravity_trimmed_mps2": round(float(trimmed[0]), 3),
+                "fit_rms_trimmed_m": round(float(trimmed[1]), 4),
+                "apex_m": round(float(np.nanmax(series)), 4),
+                "rise_m": round(float(np.nanmax(series) - series[mask][0]), 4),
+            }
+        return out
+
+    def topology(self):
+        closed, edges, max_shared = G.is_closed(self.faces)
+        return {"closed_manifold": closed, "edges": edges,
+                "max_faces_per_edge": max_shared, "triangles": int(len(self.faces))}
+
+    def events(self):
+        """metrics.json 里的四个事件帧。"""
+        summary = self.metrics.get("summary") or {}
+        return {key: summary.get(key) for key in
+                ("board_frame", "jumping_frame", "peak_frame",
+                 "water_entry_frame")}
