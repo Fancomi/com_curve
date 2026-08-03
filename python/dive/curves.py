@@ -63,8 +63,12 @@ def write_csv(path, clip, reference):
     return T.write_table(path, columns, digits=6)
 
 
-def build_meta(clip, paths, check=None):
-    """写进 JSON 的全部口径与统计。下游脚本靠它找回源数据。"""
+def build_meta(clip, paths, check=None, smooth=None, flight=None):
+    """写进 JSON 的全部口径与统计。下游脚本靠它找回源数据。
+
+    `flight` 应在贝塞尔平滑**之前**算好再传入：腾空 g 是对原始曲线的物理校验，
+    平滑后再拟合会把"看起来更接近 9.81"误当成链路更准。
+    """
     offset = clip.mesh - clip.root
     good = np.isfinite(offset).all(axis=1)
     events = clip.events()
@@ -95,6 +99,7 @@ def build_meta(clip, paths, check=None):
             "std": [round(float(v), 4) for v in offset[good].std(0)],
             "max_abs": [round(float(v), 4) for v in np.abs(offset[good]).max(0)],
         } if good.any() else None,
-        "flight": clip.fit_flight(),
+        "flight": flight if flight is not None else clip.fit_flight(),
+        "smooth": smooth or {"enabled": False},
         "reprojection": check,
     }

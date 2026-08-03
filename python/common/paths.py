@@ -42,20 +42,38 @@ def find_tramp_fbx(explicit=None):
     raise SystemExit(f"找不到源 FBX，把它放进 {display(INPUTS)}/ 或用 --src 指定")
 
 
-def resolve_metrics(frames_path, explicit=None):
-    """`*_replay_frames.bin[.br]` 旁边的 `*_replay_metrics.json`。"""
-    if explicit:
+def frames_stem(frames_path):
+    """`20260731-192305_replay_frames.bin.br` -> `20260731-192305`。"""
+    return Path(frames_path).name.split("_replay_frames")[0]
+
+
+def resolve_metrics(frames_path, explicit=None, required=False):
+    """`*_replay_frames.bin[.br]` 旁边的 `*_replay_metrics.json`。
+
+    新下载包有时只有 frames + 视频、没有 metrics。默认允许缺失，返回 None；
+    `required=True` 时保持旧行为（找不到就退出）。
+    """
+    if explicit not in (None, "", Path("")):
         path = Path(explicit).expanduser().resolve()
-    else:
-        stem = Path(frames_path).name.split("_replay_frames")[0]
-        path = Path(frames_path).parent / f"{stem}_replay_metrics.json"
-    if not path.is_file():
+        if not path.is_file():
+            raise SystemExit(f"找不到 metrics：{path}")
+        return path
+    path = Path(frames_path).parent / f"{frames_stem(frames_path)}_replay_metrics.json"
+    if path.is_file():
+        return path.resolve()
+    if required:
         raise SystemExit(f"找不到 metrics：{path}")
-    return path
+    return None
 
 
-def clip_id(metrics_path):
-    return Path(metrics_path).name.replace("_replay_metrics.json", "")
+def clip_id(metrics_path=None, frames_path=None):
+    if metrics_path is not None:
+        name = Path(metrics_path).name
+        if name.endswith("_replay_metrics.json"):
+            return name.replace("_replay_metrics.json", "")
+    if frames_path is not None:
+        return frames_stem(frames_path)
+    raise SystemExit("clip_id 需要 metrics_path 或 frames_path")
 
 
 def dive_dir(clip):
@@ -69,20 +87,23 @@ def latest_dive_dir(explicit=None):
         if not path.is_dir():
             raise SystemExit(f"目录不存在：{path}")
         return path
-    found = sorted(OUTPUTS.glob("dive_*"))
+    # 只认目录：outputs/ 里还可能有 dive_performance.json 这类同名前缀文件。
+    found = sorted(path for path in OUTPUTS.glob("dive_*") if path.is_dir())
     if not found:
         raise SystemExit(f"{display(OUTPUTS)} 下没有 dive_*，先跑 dive extract")
     return found[-1]
 
 
-def find_video(metrics_path, clip, explicit=None):
+def find_video(folder_or_metrics, clip, explicit=None):
     """叠加视频的底图。默认原始机位（下划线那版没有仪表盘）。"""
     if explicit:
         path = Path(explicit).expanduser().resolve()
         if not path.is_file():
             raise SystemExit(f"视频不存在：{path}")
         return path
-    folder = Path(metrics_path).parent
+    folder = Path(folder_or_metrics)
+    if folder.is_file():
+        folder = folder.parent
     for name in (f"{clip.replace('-', '_')}.mp4", f"{clip}.mp4",
                  f"{clip}_dive.mp4"):
         candidate = folder / name

@@ -10,9 +10,12 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE=./scripts/dive.sh
 
 if (($# >= 1)); then
-  $HERE extract --frames "$1" --check
-  # extract 把源路径写进了 curve.json，后面各步认最新那个目录就够了。
-  $HERE plot,render,overlay
+  frames="$1"
+  $HERE extract --frames "$frames" --check
+  # 用 frames 文件名锁定输出目录，避免 outputs/ 里已有别的 dive_* 时 latest 指错。
+  stem="$(basename "$frames")"
+  stem="${stem%%_replay_frames*}"
+  $HERE plot,render,overlay --dir "outputs/dive_${stem}"
 else
   $HERE plot,render,overlay
 fi

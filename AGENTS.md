@@ -20,6 +20,7 @@ tramp   extract  -> curves.{csv,json,npz} + markers.fbx    python/tramp/__main__
         verify                                             python/tramp/verify.py
 
 dive    extract  -> curve.{csv,json,npz}                   python/dive/__main__.py:step_extract
+                （默认：fit_flight 后贝塞尔轻度重采样曲线）
         plot     -> height/trajectory/scale.png            python/dive/plots.py
         render   -> render.mp4（正交四格）                  python/dive/__main__.py:step_render
         overlay  -> overlay.mp4（叠源视频）                 python/dive/__main__.py:step_overlay
@@ -67,4 +68,5 @@ dive 要三样东西：`*_replay_frames.bin.br`、同名 `*_replay_metrics.json`
 
 已经踩过的坑（改到相关处先读 README 对应段落）：正面朝向要从骨架量、光源必须每相机一个、
 体素射线交点要去重、`ear_canal` 不能逐帧现算、速度要用 `masked_derivative`、腾空窗口要
-从 metrics 事件收窄到含最高点的一条弧、Hiragino Sans GB 缺 U+2212 与 U+00B2。
+从 metrics 事件收窄到含最高点的一条弧、dive 的 `s` 是全片冻结的米/像素（物理上≈Z/fx，
+但不是逐帧深度，也不是 FOV/体型）、Hiragino Sans GB 缺 U+2212 与 U+00B2。

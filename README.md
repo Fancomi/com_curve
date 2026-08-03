@@ -127,7 +127,12 @@ root  →  anthro   骨盆代替重心的代价                 σ = 9.24 cm，m
 ./scripts/dive.sh plot,render,overlay        # 认 outputs 下最新那个 clip
 ./scripts/dive.sh --help
 ./scripts/dive_full.sh FRAMES.bin.br         # 跑一整轮（约 3 分钟）
+./scripts/profile_dive.py --report outputs/dive_performance.json
 ```
+
+`profile_dive.py` 驱动同一条 extract/plot/render/overlay 路径，逐帧记录解码、Mesh
+合成、体积重心、光栅、轨迹/HUD、PNG/视频 I/O 和 ffmpeg 的耗时；结果写入
+`outputs/dive_performance.json`，临时视频帧默认在系统临时目录生成并清理。
 
 两种口径：`root`（骨盆代理：rest pose 上离骨盆最近的 48 个顶点均值）与 `mesh`（体积重心）。
 `frames.bin` 的 kp3d 槽位当前全写 0，所以没有真正的根骨骼，代理是可复现的替代。
@@ -161,6 +166,32 @@ root  →  anthro   骨盆代替重心的代价                 σ = 9.24 cm，m
 默认取 `metrics`：它来自分析器 `ref_distance_m=3.0` 的标定，独立于 HSMR，所以那个
 −9.62 是**对整条链路的独立校验**。用 `gravity` 报 g 是循环论证，只作对照。
 （表里是 20260731 那段的数字；20260801 的 metrics 标定给 0.007845 / g = −9.04。）
+
+**`s` 的特殊性（别把它理解成 FOV 或 body shape）：**
+
+- 单位是 **米/像素**，不是焦距角、也不是体型参数。
+- 物理上近似 \(s \approx Z / f_x\)，所以**和相机远近有关**；但 pipeline **全片冻结成一个常数**，
+  不随每帧 `cam_t.z` 更新。原因是单目深度抖得太狠：20260731 的 \(t_z\) 约 22→86 m，
+  20260801 约 21→92 m。逐帧用 \(Z_t/f_x\) 会把深度噪声写成横向乱跳。
+- 作用范围是 **X/Y 共用的米制比例尺**：
+  \(X=(u-W/2)s\)，\(Y=-(v-H/2)s\)。Z 只按 \(s/s_{hsmr}\) 等比缩放体厚，**不承载前后轨迹**。
+- 因此它既不是“只改横向”的参数，也不是“逐帧距离相机远近”的实时量；侧视图只有体厚，
+  没有前后位移，是刻意设计，不是漏算。
+- 变化范围：
+  - 默认最终尺度（跨 clip）：约 `0.00785–0.00816 m/px`（两段 metrics）。
+  - HSMR 中位：约 `0.0108 m/px`；若按帧算瞬时 \(t_z/f_x\)，极端可到 `0.010–0.022`，
+    那是深度尖刺，所以取中位数而不是跟极端帧。
+- 相机依据：
+  - `hsmr`：直接来自 crop 相机 \(t_z\) 与 \(f_x^{src}=focal\cdot bbox.w/patch\)。
+  - `metrics`（默认）：分析器 `ref_distance_m=3.0` + `scale_source=bbox_center` 的图像标定。
+  - `gravity`：没有新的相机测量，只是用 probe 高度拟合 \(g\) 后反解
+    \(s_{gravity}=s_{hsmr}\cdot 9.81/|g_{hsmr}|\)。
+
+**曲线平滑（默认开）：** 抛物线拟合**之后**、plot/render/overlay **之前**，对 root/mesh
+轨迹做轻度贝塞尔最小二乘重采样（与 sport_detect 的 `BezierTools` 同构，纯 numpy）。
+只动曲线、不动人体 mesh；腾空 g 仍用平滑前的原始曲线计算，避免“平滑后 g 更好看”
+的自欺。`--bezier-ctrl N` 是“约 100 帧时的控制点数”（默认 12），段更长会按比例加
+控制点——否则 8 个点硬套 400 帧会把整段跳水弧抹平。`--no-bezier-smooth` 关闭。
 
 ### 产物（`outputs/dive_<clip>/`）
 

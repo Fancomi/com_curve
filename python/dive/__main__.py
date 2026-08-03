@@ -39,7 +39,8 @@ def _open(args, verbose=True):
         record = P.read_json(out / "curve.json")
         source = record["source"]
         frames = frames or Path(source["frames"])
-        metrics = metrics or Path(source["metrics"])
+        raw_metrics = source.get("metrics") or None
+        metrics = metrics or (Path(raw_metrics) if raw_metrics else None)
         skin = skin or Path(source["skin_obj"])
         scale = scale or record["alignment"]["scale_mode"]
     frames = Path(frames).expanduser().resolve()
@@ -50,21 +51,25 @@ def _open(args, verbose=True):
     if not skin.is_file():
         raise SystemExit(f"skin OBJ 不存在：{skin}")
 
-    clip_id = P.clip_id(metrics)
+    clip_id = P.clip_id(metrics, frames)
     out = out or P.dive_dir(clip_id)
     out.mkdir(parents=True, exist_ok=True)
     if verbose:
         print(f"  frames  {frames}")
-        print(f"  metrics {metrics}")
+        print(f"  metrics {metrics if metrics is not None else '(none)'}")
         print(f"  out     {P.display(out)}")
 
-    clip = A.Clip(frames, skin, P.read_json(metrics), scale or "metrics",
+    # 无 metrics 时默认 hsmr：metrics 尺度本身就不存在，硬用 metrics 只会退出。
+    payload = P.read_json(metrics) if metrics is not None else {}
+    chosen_scale = scale or ("metrics" if metrics is not None else "hsmr")
+    clip = A.Clip(frames, skin, payload, chosen_scale,
                   args.fps, args.trim, args.pelvis_count, verbose)
     if clip.rest.shape[0] != clip.header["skin_n"]:
         raise SystemExit(f"skin 顶点数不符：obj={clip.rest.shape[0]} "
                          f"bin={clip.header['skin_n']}")
-    return clip, {"frames": frames, "metrics": metrics, "skin_obj": skin,
-                  "out": out, "clip": clip_id}
+    return clip, {"frames": frames,
+                  "metrics": str(metrics) if metrics is not None else "",
+                  "skin_obj": skin, "out": out, "clip": clip_id}
 
 
 def step_extract(args):
@@ -78,11 +83,22 @@ def step_extract(args):
         print(f"  重投影：{check['count']} 顶点  均值 {check['mean_px']:.6f} px  "
               f"最大 {check['max_px']:.6f} px")
 
+    # 先拟合腾空抛物线（原始曲线），再可选做贝塞尔重采样。渲染读的是平滑后的曲线。
+    flight = clip.fit_flight()
+    smooth = {"enabled": False}
+    if not args.no_bezier_smooth:
+        smooth = clip.smooth_curves(n_ctrl=args.bezier_ctrl)
+        delta = smooth["per_curve"]["mesh"]["max_delta_m"]
+        print(f"  贝塞尔重采样 n_ctrl={smooth['n_ctrl']}  "
+              f"mesh 最大位移 "
+              f"({delta[0]*100:.2f}, {delta[1]*100:.2f}, {delta[2]*100:.2f}) cm")
+
     reference = Cv.metrics_reference(clip.metrics, clip.count)
     out = where["out"]
     print(f"  wrote {P.display(Cv.write_csv(out / 'curve.csv', clip, reference))}")
     meta = Cv.build_meta(clip, {k: where[k] for k in
-                                ("frames", "metrics", "skin_obj")}, check)
+                                ("frames", "metrics", "skin_obj")}, check,
+                         smooth=smooth, flight=flight)
     print(f"  wrote {P.display(P.write_json(out / 'curve.json', meta))}")
     np.savez_compressed(out / "curve.npz", frames=clip.frames, valid=clip.valid,
                         status=clip.status, root=clip.root, mesh=clip.mesh,
@@ -92,7 +108,7 @@ def step_extract(args):
 
     print(f"  可用 mesh 帧 {int((clip.valid == 1).sum())}/{clip.count}，"
           f"体高 {clip.body_height():.2f} m")
-    for key, block in clip.fit_flight()["per_curve"].items():
+    for key, block in flight["per_curve"].items():
         print(f"    {key:5s} 腾空 g={block['gravity_trimmed_mps2']:+.2f} m/s²  "
               f"顶点 {block['apex_m']:.2f} m  上升 {block['rise_m']:.2f} m  "
               f"残差 {block['fit_rms_trimmed_m']:.3f} m")
@@ -122,6 +138,12 @@ def step_render(args):
     from ..common import grid as Grid
 
     clip, where = _open(args)
+    # 腾空 g 用原始曲线；平滑只影响画出来的轨迹。
+    analysis = clip.fit_flight()
+    if not args.no_bezier_smooth:
+        # render/overlay 自己重新构造 Clip，不会读 extract 写进 CSV 的平滑结果；
+        # 这里再跑一遍，保证两种渲染与 extract 默认路径一致。
+        clip.smooth_curves(n_ctrl=args.bezier_ctrl)
     out = where["out"]
     frames_dir = out / "frames"
     if frames_dir.is_dir():
@@ -132,7 +154,6 @@ def step_render(args):
     total = min(args.max_frames, clip.count) if args.max_frames else clip.count
     cameras = scenes.cameras(clip, args.height)
     painter = R.TextPainter()
-    analysis = clip.fit_flight()
     block = (analysis.get("per_curve") or {}).get("mesh") or {}
     events = clip.events()
     width = sum(camera.width for camera in cameras.values()) * len(A.MODES)
@@ -185,8 +206,12 @@ def step_overlay(args):
     import cv2
 
     clip, where = _open(args)
+    flight = clip.fit_flight()
+    if not args.no_bezier_smooth:
+        clip.smooth_curves(n_ctrl=args.bezier_ctrl)
     out = where["out"]
-    video = P.find_video(where["metrics"], where["clip"], args.video)
+    video_anchor = where["metrics"] or where["frames"]
+    video = P.find_video(video_anchor, where["clip"], args.video)
     print(f"  video   {video}")
 
     capture = cv2.VideoCapture(str(video))
@@ -207,7 +232,7 @@ def step_overlay(args):
     for key in A.MODES:
         curves[f"{key}_y"] = getattr(clip, key)[:, 1]
         curves[f"{key}_vy"] = velocity[key][:, 1]
-    meta = {"fps": clip.fps, "events": clip.events(), "flight": clip.fit_flight(),
+    meta = {"fps": clip.fps, "events": clip.events(), "flight": flight,
             "alignment": {"scale_mode": clip.scale_mode,
                           "scale_m_per_px": clip.scale,
                           "body_height_m": clip.body_height()}}
@@ -294,6 +319,11 @@ def build_parser():
                         help="骨盆代理取多少个顶点")
     parser.add_argument("--check", action="store_true",
                         help="逐顶点验证 global -> 2D 重投影（约 1 s）")
+    # 抛物线拟合之后、渲染之前：轻度贝塞尔重采样。默认开。
+    parser.add_argument("--no-bezier-smooth", action="store_true",
+                        help="关闭曲线贝塞尔重采样（默认开启，微平滑）")
+    parser.add_argument("--bezier-ctrl", type=int, default=A.DEFAULT_BEZIER_CTRL,
+                        help="贝塞尔控制点数，越小越平滑（默认 8）")
     # render / overlay
     parser.add_argument("--video", type=Path, default=None,
                         help="overlay 的底图视频（默认原始机位 <clip>.mp4）")

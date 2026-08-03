@@ -129,3 +129,106 @@ def parabola_through_ends(track, dt, gravity, up=1):
         speed = (flat[-1, axis] - start - 0.5 * accel * total ** 2) / total
         out[:, axis] = start + speed * time + 0.5 * accel * time ** 2
     return out.ravel() if single else out
+
+
+def _binom(n, k):
+    """C(n, k)，纯整数，避免依赖 scipy。"""
+    if k < 0 or k > n:
+        return 0
+    k = min(k, n - k)
+    value = 1
+    for i in range(k):
+        value = value * (n - i) // (i + 1)
+    return value
+
+
+def bezier_basis(t, n_ctrl):
+    """Bernstein 基矩阵 (M, n_ctrl)。`t` 在 [0, 1]。
+
+    与 sport_detect 的 BezierTools 同构：B_{i,j} = C(n-1,j) (1-t)^{n-1-j} t^j。
+    高阶时用递推算，避免 C(n,k)·t^k·(1-t)^{n-k} 直接乘爆。
+    """
+    t = np.asarray(t, dtype=np.float64).reshape(-1)
+    n = int(n_ctrl)
+    if n < 2:
+        raise ValueError(f"贝塞尔至少 2 个控制点，给了 {n}")
+    degree = n - 1
+    basis = np.zeros((len(t), n), dtype=np.float64)
+    # 对每个 t：B0 = (1-t)^degree，Bj+1 = Bj * (degree-j)/(j+1) * t/(1-t)
+    for row, ti in enumerate(t):
+        ti = float(np.clip(ti, 0.0, 1.0))
+        if ti <= 0.0:
+            basis[row, 0] = 1.0
+            continue
+        if ti >= 1.0:
+            basis[row, -1] = 1.0
+            continue
+        one = 1.0 - ti
+        value = one ** degree
+        basis[row, 0] = value
+        for j in range(degree):
+            value *= (degree - j) / (j + 1) * ti / one
+            basis[row, j + 1] = value
+    return basis
+
+
+def _segment_ctrl(count, n_ctrl):
+    """把用户旋钮换成这一段实际控制点数。
+
+    约定：`n_ctrl` 是"约 100 帧时的控制点数"。段更长就按比例加控制点，
+    保持相近的局部柔顺度——否则 8 个点硬套 400 帧会把整条跳水弧抹成
+    一条大弧，最大位移到米级，根本不是"微平滑"。
+    """
+    n_ctrl = int(n_ctrl)
+    if count < 4:
+        return max(2, count)
+    scaled = int(round(n_ctrl * count / 100.0))
+    return max(4, min(count - 1, max(n_ctrl, scaled)))
+
+
+def bezier_fit_resample(points, n_ctrl=8, samples=None):
+    """最小二乘拟合贝塞尔后重采样。`points` (M, D) 或 (M,)。
+
+    参考 sport_detect 的 BezierTools：先对均匀参数 t 拟合控制点，再在同一组
+    （或给定）t 上重建。控制点少于采样点时，等价于轻度平滑；帧数不变，只把
+    高频抖动压掉。段太短或控制点不够时原样返回。
+    """
+    flat = np.asarray(points, dtype=np.float64)
+    single = flat.ndim == 1
+    flat = flat.reshape(-1, 1) if single else flat
+    count = len(flat)
+    n_ctrl = _segment_ctrl(count, n_ctrl)
+    if count < 4 or n_ctrl < 2 or n_ctrl >= count:
+        return points.copy() if single else flat.copy()
+
+    source_t = np.linspace(0.0, 1.0, count)
+    basis = bezier_basis(source_t, n_ctrl)
+    # lstsq 比显式求逆稳：B^T B 在高阶时容易病态。
+    control, *_rest = np.linalg.lstsq(basis, flat, rcond=None)
+    if samples is None:
+        target_t = source_t
+    else:
+        target_t = np.linspace(0.0, 1.0, int(samples))
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        rebuilt = bezier_basis(target_t, n_ctrl) @ control
+    if not np.isfinite(rebuilt).all():
+        return points.copy() if single else flat.copy()
+    return rebuilt.ravel() if single else rebuilt
+
+
+def smooth_track(track, valid, n_ctrl=8):
+    """只在连续有效段内做贝塞尔重采样，无效帧保持 nan。
+
+    段边界不跨过去拟合——跨无效帧连一条假线比不平滑更糟。
+    """
+    track = np.asarray(track, dtype=np.float64)
+    out = track.copy()
+    single = out.ndim == 1
+    for start, stop in runs_of(np.asarray(valid, dtype=bool)):
+        if stop - start < 3:
+            continue
+        segment = out[start:stop + 1]
+        if not np.isfinite(segment).all():
+            continue
+        out[start:stop + 1] = bezier_fit_resample(segment, n_ctrl=n_ctrl)
+    return out

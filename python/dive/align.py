@@ -45,6 +45,9 @@ MODE_DOC = {
             "in the rest pose (frames.bin has no real root joint)",
     "mesh": "homogeneous volume centroid of the skin mesh, per frame",
 }
+# 抛物线拟合之后、渲染之前的轻度贝塞尔重采样。`n_ctrl` 是"约 100 帧时的控制点数"，
+# 更长的连续有效段会按比例加控制点，避免 8 个点硬套 400 帧把整段弧抹平。
+DEFAULT_BEZIER_CTRL = 12
 
 
 def project_source(local, record):
@@ -200,9 +203,18 @@ class Clip:
         self.scale_mode = scale_mode
         self.scale = self.scale_table.get(scale_mode)
         if self.scale is None or not np.isfinite(self.scale) or self.scale <= 0:
-            raise SystemExit(f"尺度 {scale_mode} 不可用：{self.scale_table}")
+            # 无 metrics 时 metrics 尺度不可用；自动退到 hsmr，避免整批任务直接退出。
+            fallback = next((k for k in ("hsmr", "gravity")
+                             if np.isfinite(self.scale_table.get(k, float("nan")))
+                             and self.scale_table[k] > 0), None)
+            if fallback is None:
+                raise SystemExit(f"尺度 {scale_mode} 不可用：{self.scale_table}")
+            if verbose:
+                print(f"  尺度 {scale_mode} 不可用，改用 {fallback}")
+            self.scale_mode = fallback
+            self.scale = self.scale_table[fallback]
         if verbose:
-            print(f"  尺度({scale_mode}) = {self.scale:.6f} m/px   候选 "
+            print(f"  尺度({self.scale_mode}) = {self.scale:.6f} m/px   候选 "
                   + "  ".join(f"{k}={v:.6f}" for k, v in self.scale_table.items()
                               if np.isfinite(v)))
         self.__dict__.update(self._place(self.scale))
@@ -210,34 +222,44 @@ class Clip:
     # ---- 内部 ----------------------------------------------------------
 
     def _flight_window(self):
-        """腾空段（离板 -> 入水），取自 metrics.json 的分析器事件，再收窄到一条弧。
+        """腾空段（离板 -> 入水）。优先 metrics 事件，再收窄到含最高点的一条弧。
 
-        这条线不自己检测入水：上游分析器已经给了事件帧，重新猜一遍只会引入分歧。
-        但 `jumping_frame` 有时给的是**第一次**下压而不是最后一次离板——20260801 那段
-        的 f245..f440 里含三次弹跳，整段拟合出 g = -1.16（残差 0.88 m），把三条弧当成
-        一条抛物线拟当然错。
+        有 metrics 时：不自己猜 jump/water（上游分析器已给事件帧），只把
+        jumping_frame..water_entry_frame 收窄到 peak 两侧各自最低点——20260801
+        那种多次弹跳整段拟会得到 g≈-1.16，收窄后才接近 -9。
 
-        收窄办法：取 `peak_frame` 两侧各自的**最低点**。含最高点的那条弧一定被这两个
-        谷底夹住，而且这个判据没有阈值、不看相邻帧——顶点附近姿态摆动造出的十几个假
-        局部极值和 0.1 px 量级的抖动都影响不到它。20260731 的窗口本来就只有一条弧，
-        收窄前后完全相同（f333..f437，g = -9.62）；20260801 收窄到 f323..f438，
-        g 从 -1.16 变成 -9.04（残差 0.88 m -> 0.03 m）。
+        无 metrics 时（新下载包常见）：用 mesh 像素高度自检——取最长连续有效段，
+        在其中找最高点，再取两侧谷底。这比没有窗口强，但不如分析器事件稳，
+        结果写进 JSON 的 events 时 peak 有值、jump/water 可能为空。
         """
+        height = -self.pixels["mesh"][:, 1]     # 图像 y 向下，取负得到"越高越大"
         summary = self.metrics.get("summary") or {}
         jump, water = summary.get("jumping_frame"), summary.get("water_entry_frame")
-        if jump is None or water is None or int(water) <= int(jump) + 20:
-            return None
-        low, high = int(jump), int(water)
         peak = summary.get("peak_frame")
-        if peak is None or not low < int(peak) < high:
+        if jump is not None and water is not None and int(water) > int(jump) + 20:
+            low, high = int(jump), int(water)
+            if peak is None or not low < int(peak) < high:
+                return (low, high)
+            peak = int(peak)
+            return (low + int(np.nanargmin(height[low:peak + 1])),
+                    peak + int(np.nanargmin(height[peak:high + 1])))
+
+        # ---- 无 metrics 回退：最长连续有效段 + 峰两侧谷底 ----
+        valid = np.isfinite(height)
+        runs = Sig.runs_of(valid)
+        if not runs:
+            return None
+        low, high = max(runs, key=lambda ab: ab[1] - ab[0])
+        if high - low < 20:
+            return None
+        peak = low + int(np.nanargmax(height[low:high + 1]))
+        if peak <= low or peak >= high:
             return (low, high)
-        # 用像素高度：这个方法在定尺度之前就要调（腾空窗口是 --scale gravity 反解的
-        # 输入），那时还没有 global 坐标。global Y = -(v - H/2)·s 是 v 的单调线性映射，
-        # 极值位置逐帧相同。
-        height = -self.pixels["mesh"][:, 1]     # 图像 y 向下，取负得到"越高越大"
-        peak = int(peak)
-        return (low + int(np.nanargmin(height[low:peak + 1])),
-                peak + int(np.nanargmin(height[peak:high + 1])))
+        left = low + int(np.nanargmin(height[low:peak + 1]))
+        right = peak + int(np.nanargmin(height[peak:high + 1]))
+        if right - left < 20:
+            return (low, high)
+        return (left, right)
 
     def _place(self, scale):
         """按给定 s 放置全片。返回 {meshes, root, mesh, volume, valid}。"""
@@ -334,3 +356,33 @@ class Clip:
         return {key: summary.get(key) for key in
                 ("board_frame", "jumping_frame", "peak_frame",
                  "water_entry_frame")}
+
+    def smooth_curves(self, n_ctrl=DEFAULT_BEZIER_CTRL):
+        """抛物线拟合之后、渲染之前：对 root/mesh 曲线做轻度贝塞尔重采样。
+
+        只动曲线，不动 `meshes`——人体姿态仍是原始放置结果；变的是轨迹线、高度
+        读数和 overlay 面板。先 `fit_flight()` 再调本方法：腾空 g 仍用未平滑曲线，
+        避免"平滑后更好看所以 g 更接近 9.81"的自欺。返回写入 JSON 的参数摘要。
+        """
+        n_ctrl = int(n_ctrl)
+        if n_ctrl < 2:
+            raise ValueError(f"贝塞尔控制点数至少 2，给了 {n_ctrl}")
+        valid = self.valid == 1
+        stats = {}
+        for key in MODES:
+            original = getattr(self, key)
+            smoothed = Sig.smooth_track(original, valid, n_ctrl=n_ctrl)
+            good = valid & np.isfinite(original).all(1) & np.isfinite(smoothed).all(1)
+            delta = (np.abs(smoothed[good] - original[good]) if good.any()
+                     else np.zeros((0, 3)))
+            setattr(self, key, smoothed)
+            stats[key] = {
+                "max_delta_m": [round(float(v), 5) for v in
+                                (delta.max(0) if len(delta) else [0, 0, 0])],
+                "mean_delta_m": [round(float(v), 5) for v in
+                                 (delta.mean(0) if len(delta) else [0, 0, 0])],
+            }
+        return {"enabled": True, "n_ctrl": n_ctrl, "method":
+                "least-squares Bezier resample on contiguous valid runs "
+                "(sport_detect BezierTools-compatible, pure numpy)",
+                "per_curve": stats}

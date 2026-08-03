@@ -15,6 +15,7 @@
 #   ./scripts/dive.sh plot,render,overlay --dir outputs/dive_20260731-192305
 #   ./scripts/dive.sh extract --frames F --scale gravity     # 换尺度口径
 #   ./scripts/dive.sh overlay --dir DIR --no-mesh            # 只画质心
+#   ./scripts/dive.sh extract --frames F --no-bezier-smooth  # 关闭曲线平滑
 #
 # extract 会把源路径写进 curve.json，之后各步只给 --dir 就够了；不给 --dir 时
 # 取 outputs/ 下最新的那个 dive_* 目录。
@@ -23,6 +24,9 @@
 #   metrics  分析器标定 0.008157 m/px，腾空 g=-9.13（默认，独立于 HSMR）
 #   hsmr     HSMR 自己的深度 0.010804，体高自洽但 g=-12.1
 #   gravity  反解出 g=-9.81 的那个值，用它报 g 是循环论证，只作对照
+#
+# 曲线平滑（默认开）：抛物线拟合之后对 root/mesh 做轻度贝塞尔重采样，再进
+# plot/render/overlay。--no-bezier-smooth 关闭；--bezier-ctrl N 调控制点数。
 #
 # 不需要 FBX SDK。完整选项：python -m python.dive --help
 set -euo pipefail
