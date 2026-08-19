@@ -36,7 +36,7 @@ def speeds(clip):
     """{口径: (N, 3) 速度}。无效帧与段边界为 nan。"""
     valid = clip.valid == 1
     return {key: Sig.masked_derivative(getattr(clip, key), valid, 1.0 / clip.fps)
-            for key in A.MODES}
+            for key in clip.modes}
 
 
 def write_csv(path, clip, reference):
@@ -47,13 +47,13 @@ def write_csv(path, clip, reference):
                ("time_s", clip.frames / clip.fps),
                ("valid", clip.valid),
                ("status", clip.status)]
-    for key in A.MODES:
+    for key in clip.modes:
         columns += T.vector_columns(key, getattr(clip, key), "m")
     columns += T.vector_columns("offset", clip.mesh - clip.root, "m")
-    for key in A.MODES:
+    for key in clip.modes:
         columns += [(f"{key}_vy_mps", velocity[key][:, 1]),
                     (f"{key}_speed_mps", np.linalg.norm(velocity[key], axis=1))]
-    for key in A.MODES:
+    for key in clip.modes:
         columns += [(f"{key}_u_px", clip.pixels[key][:, 0]),
                     (f"{key}_v_px", clip.pixels[key][:, 1])]
     columns += [("volume_m3", clip.volume),
@@ -79,7 +79,7 @@ def build_meta(clip, paths, check=None, smooth=None, flight=None):
         "fps": clip.fps,
         "frames": [int(clip.frames[0]), int(clip.frames[-1])],
         "usable_frames": int((clip.valid == 1).sum()),
-        "modes": A.MODE_DOC,
+        "modes": {key: A.MODE_DOC[key] for key in clip.modes},
         "alignment": {
             "method": "fixed depth plane; X/Y from the true source-video "
                       "projection of each vertex, Z carries body thickness only",
@@ -102,4 +102,5 @@ def build_meta(clip, paths, check=None, smooth=None, flight=None):
         "flight": flight if flight is not None else clip.fit_flight(),
         "smooth": smooth or {"enabled": False},
         "reprojection": check,
+        "gb": clip.gb_facts(),
     }

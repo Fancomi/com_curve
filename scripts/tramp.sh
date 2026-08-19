@@ -5,8 +5,9 @@
 #
 # STEPS 逗号分隔、按给出顺序执行：
 #   extract   FBX -> outputs/tramp/curves.{csv,json,npz} + markers.fbx
-#             四种重心口径一次算完：root(骨盆) / mesh(体积重心) /
-#             mujoco(14刚体·网格质量) / anthro(14刚体·Dempster质量)
+#             五种重心口径一次算完：root(骨盆) / mesh(体积重心) /
+#             mujoco(14刚体·网格质量) / anthro(14刚体·Dempster质量) /
+#             gb(14刚体·GB/T 17245 国标质量)
 #   retarget  反算根骨骼，让被盯的曲线走完美抛物线
 #             -> outputs/tramp/retarget/<target>.{fbx,csv,json,npz}
 #             --targets root 是 before 基线（原设计的意图，但用精确 g）
@@ -15,10 +16,10 @@
 #   verify    独立校验：解析体、蒙特卡洛、体段恒等式、反算产物
 #
 # 常用：
-#   ./scripts/tramp.sh extract,plot                      # 四条曲线 + 图
+#   ./scripts/tramp.sh extract,plot                      # 五条曲线 + 图
 #   ./scripts/tramp.sh render                            # root vs mesh 视频
 #   ./scripts/tramp.sh render --pair mujoco anthro       # 另两种口径
-#   ./scripts/tramp.sh retarget --targets root mesh mujoco anthro
+#   ./scripts/tramp.sh retarget --targets root mesh mujoco anthro gb
 #   ./scripts/tramp.sh verify
 #
 # 源 FBX 默认找 inputs/BengChuang_01.fbx，其次仓库上一级；用 --src 显式指定。

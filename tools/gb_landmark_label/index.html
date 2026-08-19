@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>国标体表标志点标注 — GB/T 17245-2004</title>
+<script type="importmap">
+{ "imports": { "three": "./three.module.js" } }
+</script>
+<style>
+  html,body{height:100%;margin:0;background:#0a0e14;color:#eee;
+            font-family:system-ui,-apple-system,"PingFang SC",monospace;font-size:12px}
+  body{display:flex}
+  #left,#right{width:300px;background:#12161e;padding:10px;display:flex;
+               flex-direction:column;gap:8px;overflow-y:auto}
+  #left{border-right:1px solid #283040} #right{border-left:1px solid #283040}
+  #stage{position:relative;flex:1;background:#05070a;overflow:hidden;min-width:0}
+  canvas{display:block;position:absolute;top:0;left:0}
+  #status{position:absolute;bottom:8px;left:8px;max-width:70%;
+          background:rgba(0,0,0,.65);padding:5px 9px;border-radius:3px;z-index:5}
+  #vp-bar{position:absolute;top:6px;left:6px;z-index:5;display:flex;gap:4px;
+          flex-wrap:wrap;max-width:60%}
+  #vp-bar button{background:#16202c;color:#cfe;border:1px solid #2a3340;
+                 border-radius:4px;padding:3px 8px;cursor:pointer;font-size:12px}
+  #vp-bar button:hover{background:#20303f}
+  #vp-bar .sep{width:1px;background:#2a3340;margin:2px 3px}
+  h2{font-size:14px;color:#7df;margin:0 0 4px} h3{font-size:11px;color:#8ab;margin:0}
+  .card{border-top:1px solid #222a36;padding-top:8px;display:flex;
+        flex-direction:column;gap:5px}
+  button{padding:6px 8px;background:#222a36;border:1px solid #3a4555;color:#eee;
+         border-radius:4px;cursor:pointer;font:inherit}
+  button:hover{background:#2e3848} button.on{background:#0066cc;border-color:#3399ff}
+  button.primary{background:#1f6f43;border-color:#2e9e60}
+  .row{display:flex;gap:5px} .row>*{flex:1}
+  .row.small{align-items:center;color:#889} .row.small span{flex:0 0 auto}
+  input[type=range]{width:100%}
+  .hint{color:#9ab;font-size:11px;line-height:1.6;margin:0;background:#1a2530;
+        padding:7px 9px;border-radius:4px}
+  .hint b{color:#7df}
+  #lm-list{display:flex;flex-direction:column;gap:2px}
+  .lm{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:3px;
+      cursor:pointer;border:1px solid transparent}
+  .lm:hover{background:#1a212c}
+  .lm.on{background:#123055;border-color:#2563a8}
+  .lm .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;
+           border:1px solid #0a0e14}
+  .lm .nm{flex:1;font-size:11px}
+  .lm .st{font-size:10px;color:#6a7a8a;flex:0 0 auto}
+  .lm.done .st{color:#4ec97a}
+  #detail{background:#1a2530;padding:8px 9px;border-radius:4px;
+          font-size:11px;line-height:1.65;color:#bcd;min-height:60px}
+  #detail .k{color:#7df;font-weight:600}
+  #detail .b{color:#e8b563}
+  #detail .warn{color:#ff9d5c}
+  #detail .dim{color:#6a7a8a}
+  .kbd{position:absolute;right:8px;bottom:8px;z-index:6;background:#111922;
+       border:1px solid #2a3340;border-radius:6px;color:#bcd;font-size:11px;
+       padding:6px 9px;line-height:1.7}
+  .kbd b{color:#2fd6e0}
+  .picked{font-size:11px;color:#8ab;line-height:1.6}
+  .picked code{color:#e8b563}
+</style>
+</head>
+<body>
+<aside id="left">
+  <h2>国标体表标志点标注</h2>
+  <p class="hint">
+    GB/T 17245-2004 表 1 的分界点全是<b>体表骨性标志</b>，不是关节中心。
+    在 <b>T-pose</b> 上点一次，存的是 <b>SKEL/SMPL 原生顶点索引</b>——
+    skin 6890 / skel 247252，<b>不抽稀、无中间映射</b>，下游直接 verts[index]。
+  </p>
+
+  <div class="card">
+    <h3>标志点　<span id="progress" style="color:#4ec97a">0 / 20</span></h3>
+    <div id="lm-list"></div>
+  </div>
+
+  <div class="card">
+    <h3>当前目标</h3>
+    <div id="detail">从上面选一个标志点</div>
+    <div id="picked" class="picked"></div>
+    <div id="mirror-info" class="picked" style="color:#5b8dff"></div>
+    <div class="row">
+      <button id="btn-clear">✕ 清除此点</button>
+      <button id="btn-mirror" title="按 x 镜像求对侧最近顶点">⇄ 镜像到对侧</button>
+    </div>
+    <button id="btn-snap" title="把当前点吸附到中线（x 取 0 后找最近顶点）">
+      ⊥ 吸附到中线</button>
+  </div>
+
+  <div class="card">
+    <h3>读写</h3>
+    <button id="btn-save" class="primary">💾 导出 JSON</button>
+    <button id="btn-load">📥 载入已有 JSON</button>
+    <input id="json-input" type="file" accept=".json" hidden>
+  </div>
+</aside>
+
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="vp-bar">
+    <button id="v-home" title="重置视角 (R)">⌂ 复位</button>
+    <button id="v-focus" title="聚焦当前标志点所在的骨 (F)">◎ 聚焦骨</button>
+    <span class="sep"></span>
+    <button id="v-front" title="正面">正</button>
+    <button id="v-back" title="背面">背</button>
+    <button id="v-left" title="左侧">左</button>
+    <button id="v-right" title="右侧">右</button>
+    <button id="v-top" title="俯视">顶</button>
+    <button id="v-bottom" title="仰视，看脚底">底</button>
+  </div>
+  <div class="kbd">
+    <div><b>左键点</b> 选中最近顶点　<b>左键拖</b> 自由旋转</div>
+    <div><b>右键拖</b> 平移　<b>滚轮</b> 缩放　<b>Q/E</b> 绕视线转</div>
+    <div><b>R</b> 复位　<b>F</b> 聚焦骨　<b>C</b> 剖切　<b>I</b> 隔离　<b>W</b> 线框</div>
+    <div><b>[ ]</b> 上/下一个标志点</div>
+    <div style="color:#5b8dff">蓝色空心球 = twin（镜像顶点）</div>
+  </div>
+  <div id="status">加载资源…</div>
+</div>
+
+<aside id="right">
+  <div class="card">
+    <h3>显示</h3>
+    <div class="row"><button id="t-skin" class="on">皮肤面</button>
+      <button id="t-skel" class="on">骨骼面</button></div>
+    <div class="row"><button id="t-skin-verts">皮肤顶点</button>
+      <button id="t-skel-verts">骨骼顶点</button></div>
+    <div class="row"><button id="t-wire">▦ 线框</button>
+      <button id="t-joints">SKEL 关节</button></div>
+    <div class="row"><button id="t-clip" title="沿视线方向切掉前半个人 (C)">
+        ✂ 剖切</button>
+      <button id="t-midplane" title="x = 0 的参考面">▯ 中线面</button></div>
+    <div class="row small"><span>剖切深度</span>
+      <input id="clip-depth" type="range" min="-0.35" max="0.35" step="0.01" value="0"></div>
+    <div class="row small"><span>皮肤透明</span>
+      <input id="skin-op" type="range" min="0.05" max="1" step="0.05" value="0.3"></div>
+    <div class="row small"><span>骨骼透明</span>
+      <input id="skel-op" type="range" min="0.05" max="1" step="0.05" value="1"></div>
+    <div class="row small"><span>顶点大小</span>
+      <input id="vert-size" type="range" min="1" max="8" step="0.5" value="2"></div>
+    <div class="row small"><span>标记大小</span>
+      <input id="mark-size" type="range" min="0.005" max="0.05" step="0.005" value="0.018"></div>
+  </div>
+
+  <div class="card">
+    <h3>只显示相关骨</h3>
+    <p class="hint" style="margin:0">开启后<b>只能点中这根骨</b>，其他骨既隐藏也
+      点不到。皮肤按上面的开关照常显示（要看骨突相对体表的位置就留着，
+      挡视线就把透明度拉低或按 <b>C</b> 剖切）。快捷键 <b>I</b>。</p>
+    <button id="t-isolate">🔍 隔离相关骨</button>
+    <div id="bone-name" class="picked"></div>
+  </div>
+
+  <div class="card">
+    <h3>拾取来源</h3>
+    <div class="row"><button id="p-skin">皮肤顶点</button>
+      <button id="p-skel" class="on">骨骼顶点</button></div>
+    <p class="hint" style="margin:0">国标标志点是<b>骨性</b>标志，默认从骨骼层拾取
+      （24.7 万顶点，够密）。要标皮肤上的点再切过去。</p>
+  </div>
+</aside>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -12,10 +12,15 @@ OUTPUTS = ROOT / "outputs"
 
 # 蹦床 FBX 的默认位置：先看 inputs/，再退回仓库上一级（原始放置处）。
 TRAMP_FBX_NAMES = ("BengChuang_01.fbx",)
-# dive 的 HSMR skin 拓扑。与 frames.bin 的 skin 顶点数必须一致。
-DIVE_SKIN_OBJ = Path(
+# dive 的 HSMR 权重目录：skin 拓扑（顶点数必须与 frames.bin 的 skin 一致）、
+# 两个 vertex mapping（稠密 SKEL -> DIVF 子集，gb 口径要用）。
+HSMR_DIR = Path(
     "/Users/penghaotian/Documents/GIT/rtsp-h264-stitcher/weights/diving/"
-    "hsmr_official/simplified_advanced_skin_1400.obj")
+    "hsmr_official")
+DIVE_SKIN_OBJ = HSMR_DIR / "simplified_advanced_skin_1400.obj"
+DIVE_SKEL_OBJ = HSMR_DIR / "simplified_advanced_skel_3000.obj"
+# 国标体表标志点的标注（tools/gb_landmark_label 产出，migrate 脚本落到 inputs/）。
+GB_LANDMARKS = INPUTS / "gb_landmarks.json"
 
 
 def display(path):

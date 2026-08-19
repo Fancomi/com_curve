@@ -14,6 +14,7 @@
 """
 import numpy as np
 
+from ..common import gb17245 as GB
 from ..common import geometry as G
 from ..common import paths as P
 from ..common import signal as Sig
@@ -192,6 +193,52 @@ def verify_bodies(sampler):
           f"{ratio * 100:.2f}%（文献站姿约 55–57%，抬臂 T-pose 偏高）；同姿态 mesh "
           f"{(mesh_centre[1] - bodies.floor_cm) / bodies.height_cm * 100:.2f}%，"
           f"mujoco {(composite[1] - bodies.floor_cm) / bodies.height_cm * 100:.2f}%")
+
+    # 国标口径的独立核对。三条，各守不同的东西：
+    #
+    # 1) 站姿重心高度对上**国标自己的表 7「整体质心」行**。那一行给的是"距头顶点占
+    #    身高的百分比"（男 43.8 / 女 44.5），换成距地面就是 56.2 / 55.5——这是国标
+    #    自带的、与分段实现无关的基准，比抄文献的 55–57% 硬。放宽到 ±6 个百分点，
+    #    因为这个绑定是抬臂 T-pose（同姿态下 mesh 58.2%、anthro 59.9% 都偏高）。
+    #    注意必须减掉 floor_cm：这个模型脚底在 y≈10.6 而不是 0。
+    # 2) 男女表值不同，互换 sex 必须让全身重心真的动。
+    # 3) 表 2/3 的绝对 mm 值能反解出全躯干质心比例，与 GB_TRUNK_RATIO 对上——
+    #    守的是"合并躯干时随手取了上躯干比例"那个错误（差 10 个百分点，2.8 cm）。
+    for sex, label, want in ((S.GB_MALE, "男", S.GB_WHOLE_BODY_FROM_VERTEX[S.GB_MALE]),
+                             (S.GB_FEMALE, "女", S.GB_WHOLE_BODY_FROM_VERTEX[S.GB_FEMALE])):
+        centre = G.weighted_centre(
+            np.array([S.gb_centres(joints, sex)[n] for n in bodies.names]),
+            np.array([S.gb_mass_fractions(sex)[n] for n in bodies.names]))
+        ratio = (centre[1] - bodies.floor_cm) / bodies.height_cm * 100
+        target = 100.0 - want              # 表 7 是距头顶，我们量的是距地面
+        check(f"gb 站姿重心高度对上表 7 整体质心行（{label}表）",
+              abs(ratio - target) <= 6.0,
+              f"{ratio:.2f}% vs 国标 {target:.1f}%（表 7 给距头顶 {want}%），"
+              f"差 {ratio - target:+.2f} 个百分点；抬臂 T-pose 偏高")
+
+    gb_male = G.weighted_centre(
+        np.array([S.gb_centres(joints, S.GB_MALE)[n] for n in bodies.names]),
+        np.array([S.gb_mass_fractions(S.GB_MALE)[n] for n in bodies.names]))
+    gb_female = G.weighted_centre(
+        np.array([S.gb_centres(joints, S.GB_FEMALE)[n] for n in bodies.names]),
+        np.array([S.gb_mass_fractions(S.GB_FEMALE)[n] for n in bodies.names]))
+    check("gb 性别互换会改变结果", np.linalg.norm(gb_male - gb_female) > 0.5,
+          f"男/女表差 {np.linalg.norm(gb_male - gb_female):.3f} cm")
+
+    # 表 2/3 的绝对值反解全躯干质心比例：段长 = m.c ÷ Lcs，比例 = 全躯干 m.c ÷ 段长。
+    # 这条与 `GB.trunk_merged_ratio()` 零共享代码——上面的数字是从标准表 2/3 手抄的，
+    # 那个函数走的是 `GB.TRUNK_MC_MM` + `GB.CENTROID_PCT`。守的是「合并躯干时随手取
+    # 上躯干比例」那个错误（错用会偏 10 个百分点，对全身重心 2.8 cm）。
+    for sex, label, up_mc, up_pct, lo_mc, lo_pct, whole_mc in (
+            (S.GB_MALE, "男", 115.6, 53.6, 177.8, 40.3, 286.2),
+            (S.GB_FEMALE, "女", 107.4, 49.3, 178.7, 44.6, 281.4)):
+        span = up_mc / (up_pct / 100) + lo_mc / (lo_pct / 100)
+        derived = whole_mc / span * 100
+        used = GB.trunk_merged_ratio(sex) * 100
+        check(f"合并躯干质心比例与表 2/3 反解一致（{label}表）",
+              abs(derived - used) < 0.05,
+              f"反解 {derived:.2f}% vs common.gb17245 {used:.2f}%；上躯干值是 "
+              f"{up_pct}%，错用它会偏 {abs(up_pct - derived):.1f} 个百分点")
 
     # 推导点必须始终贴在所附骨上。这条抓到过真实的 bug：早先 ear_canal 每帧用世界 Y
     # 沿头颈轴插值现算，而 485 帧里有 225 帧人是倒着的、16 帧头颈轴接近水平，插值

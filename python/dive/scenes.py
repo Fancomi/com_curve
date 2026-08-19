@@ -23,8 +23,9 @@ from . import align as A
 VIEWS = (("front", 0, 2, +1), ("side", 2, 0, +1))
 VIEW_CN = {"front": "正视", "side": "侧视"}
 VIEW_SUB = {"front": "与源视频投影一致", "side": "仅体厚 · 单目无深度"}
-MODE_CN = {"root": "骨盆代理", "mesh": "Mesh 重心"}
-MODE_SUB = {"root": "rest 邻域顶点均值", "mesh": "均质体积重心"}
+MODE_CN = {"root": "骨盆代理", "mesh": "Mesh 重心", "gb": "国标 15 段"}
+MODE_SUB = {"root": "rest 邻域顶点均值", "mesh": "均质体积重心",
+            "gb": "GB/T 17245 · 体表骨突"}
 
 MARKER = {key: PS.bgr(key) for key in A.MODES}
 # 正交渲染用淡蓝白；叠在源视频上换紫罗兰——这个场馆墙是米白、池是青，淡蓝两边都撞，
@@ -54,7 +55,7 @@ def views():
 def cameras(clip, height):
     """两台正交相机，共用垂直范围。"""
     clouds = [m for m in clip.meshes if m is not None]
-    tracks = [getattr(clip, key) for key in A.MODES]
+    tracks = [getattr(clip, key) for key in clip.modes]
     ranges, y_range = Grid.frame_ranges(clouds, tracks, pad=0.10)
     return {key: R.OrthoCamera(axis, depth_axis, sign, ranges[axis], y_range,
                                height, MIN_WIDTH)
@@ -137,10 +138,11 @@ def draw_panel(panel, curves, meta, index):
                     0.48, TEXT, 1, cv2.LINE_AA)
 
     split = int(height * 0.56)
-    block(38, split - 34, {k: curves[f"{k}_y"] for k in A.MODES}, "height Y (m)")
-    block(split + 22, height - 46, {k: curves[f"{k}_vy"] for k in A.MODES},
+    keys = [k for k in A.MODES if f"{k}_y" in curves]
+    block(38, split - 34, {k: curves[f"{k}_y"] for k in keys}, "height Y (m)")
+    block(split + 22, height - 46, {k: curves[f"{k}_vy"] for k in keys},
           "vertical speed (m/s)")
-    for offset, name in enumerate(A.MODES):
+    for offset, name in enumerate(keys):
         cv2.putText(panel, name, (left + offset * 66, height - 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, MARKER[name], 1, cv2.LINE_AA)
     return panel

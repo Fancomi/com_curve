@@ -1,7 +1,7 @@
-"""把人体拆成 14 段刚体，再按两种质量口径求全身重心。
+"""把人体拆成 14 段刚体，再按三种质量口径求全身重心。
 
-这是 dde88bca 那次会话里定下的方案 B 与 C，两者共用同一套体段划分与前向运动学，
-只在**质量从哪来**上分岔：
+这是 dde88bca 那次会话里定下的方案 B 与 C（以及后来加的国标口径），三者共用同一套
+体段划分与前向运动学，只在**质量从哪来**上分岔：
 
   mujoco —— 方案 B。质量来自网格自身：把绑定姿态的实体体积按体段切开，
             每段 m = ρV（ρ 取 MuJoCo 的默认 geom density 1000 kg/m³），
@@ -10,6 +10,9 @@
   anthro —— 方案 C。质量来自 Dempster(1955)/Winter(2009) 的体段质量比，与网格无关；
             段质心按表里的"距近端占段长的比例"落在关节连线上。这是运动生物力学
             对着动捕关节点算重心的经典做法。
+  gb     —— 方案 C 的中国版。质量与质心比例来自国标 GB/T 17245-2004《成年人人体
+            惯性参数》表 6/7（原件与 OCR 文本在 `docs/成年人人体惯性参数/`），
+            男/女两套值，独立于 Dempster 表。
 
 与已有两条曲线的关系：
 
@@ -17,11 +20,15 @@
   mesh   1 个可变形体，每帧重新积分体积——四肢挤压会让体积重新分布
   mujoco 14 个刚体，质量由网格形状决定（均质），段内分布冻结在绑定姿态
   anthro 14 个刚体，质量由人体测量学表决定（非均质），质心在关节连线上
+  gb     14 个刚体，质量与质心比例由国标表决定（非均质），质心在关节连线上
 
 mujoco 与 mesh 的差就是"把可变形体冻成刚体"的代价；anthro 与 mujoco 的差就是
-"真人各段密度不同"的代价。这两个差是分开的，所以四条曲线一起看才说明问题。
+"真人各段密度不同"的代价；gb 与 anthro 的差就是"两套独立人体测量学表"的代价。
+这些差是分开的，所以五条曲线一起看才说明问题。
 """
 import numpy as np
+
+from ..common import gb17245 as GB
 
 # --- Dempster(1955) / Winter(2009) 14 段模型 ---------------------------------
 # (质量占全身比, 质心距近端占段长的比例)。这 14 段的质量比之和恰好是 1.000——
@@ -37,6 +44,51 @@ DEMPSTER = {
     "forearm":   (0.0160, 0.430),   # 肘 -> 尺骨茎突（腕）
     "hand":      (0.0060, 0.506),   # 腕 -> 中指第二指节
 }
+
+# ---- 国标 GB/T 17245-2004 ---------------------------------------------------
+# **表值本身在 `common/gb17245.py`**，这里只放「国标 9 类 -> 本骨架 14 段」的适配层。
+# dive 那条线也用同一份表（但按标注的体表骨突组段），抄两遍必然会漂。
+
+# 国标男子/女子位，转发过来免得调用方两处 import。
+GB_MALE, GB_FEMALE = GB.MALE, GB.FEMALE
+
+# 本骨架里 `SEGMENTS` 的 near 落在解剖**下端**的段：`Lcs` 是「距上端」，要用
+# 1 − Lcs 才是「距 near」。
+#   head_neck  near=Neck_M（下）  far=ear_canal（上）
+#   trunk      near=髋中点（下）   far=肩中点（上）
+# 其余 12 段（四肢）的 near 就是上端，直接用。搞反会让头颈质心跑到颈侧、
+# 躯干质心掉到髋侧。
+GB_NEAR_IS_LOWER = ("head_neck", "trunk")
+
+# GB/T 17245-2004 表 6/7 的 9 类体段 -> 本骨架 14 段。这把「国标定义」翻译成「这个
+# FBX 绑定里哪块肉属于哪类」，是 gb 口径唯一的适配层。国标把躯干分上下两段，
+# 本骨架只有一个躯干刚体，所以质量求和、质心比例走 `GB.trunk_merged_ratio()`。
+#
+# 已知的定义差（都记在这里，不假装严格对齐）：
+#   trunk      国标分上/下两段（颈椎点→胸下点→会阴点），本骨架是一整段刚体
+#              （髋中点↔肩中点，477 mm vs 国标全躯干 657 mm）。
+#   head_neck  国标是头顶点→颈椎点，本骨架是 Neck_M→ear_canal（Winter 的定义）。
+#   foot       国标轴是内踝点→**足底**（竖直），本骨架是 Ankle→Toes（水平）。
+#              比例 48.6% 两种轴向都接近中点，且足只占 1.48% 质量。
+#   hand       国标远端是**中指指尖点**，本骨架是 MiddleFinger2（中指第二指节，
+#              Winter 的定义），段长偏短约 40%。手占 0.64% 质量。
+#
+# 端点还有个更根本的差：国标表 1 的分界点是**体表骨性标志**，这里用的是关节中心
+# （大腿因此偏短 3.3 个百分点身高、小腿偏长 2.6）。dive 那条线用手标的真骨突，
+# 没有这笔账——两条 `gb` 曲线因此不是同一个量，README 里写明了。
+GB_SEGMENT_MAP = {
+    "head_neck": ("head_neck",),
+    "trunk":     ("trunk",),
+    "thigh":     ("thigh_L", "thigh_R"),
+    "shank":     ("shank_L", "shank_R"),
+    "foot":      ("foot_L", "foot_R"),
+    "upperarm":  ("upperarm_L", "upperarm_R"),
+    "forearm":   ("forearm_L", "forearm_R"),
+    "hand":      ("hand_L", "hand_R"),
+}
+
+# 表 7 的「整体质心」行：全身重心距**头顶点**占身高的百分比，(男, 女)。转发用。
+GB_WHOLE_BODY_FROM_VERTEX = GB.WHOLE_BODY_FROM_VERTEX
 
 # MuJoCo `geom` 的默认密度，kg/m³。文档口径：不写 density 也不写 mass 时，
 # 编译器按均质实体 + 这个密度从 mesh 推 inertial。水的密度，对人体是个好近似。
@@ -166,6 +218,56 @@ def dempster_mass_fractions():
     total = sum(out.values())
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"Dempster 质量比之和是 {total}，不是 1")
+    return out
+
+
+def gb_mass_fractions(sex=GB_MALE):
+    """段名 -> 质量占全身比，按 GB/T 17245-2004 表 6（表值在 `common.gb17245`）。
+
+    国标 9 类里躯干是上下两段，本骨架只有一个躯干刚体，所以先按 `GB_SEGMENT_MAP`
+    展开到 14 段、躯干取两子段之和。闭合校验也在这里：加总必须约等于 1，抄错一个
+    数字会立刻炸。容差 `GB.MASS_TOLERANCE`——国标自身舍入到 0.01%。
+    """
+    out = {}
+    for kind, targets in GB_SEGMENT_MAP.items():
+        if kind == "trunk":
+            fraction = (GB.MASS_PCT["trunk_upper"][sex]
+                        + GB.MASS_PCT["trunk_lower"][sex]) / 100.0
+        else:
+            fraction = GB.MASS_PCT[kind][sex] / 100.0
+        for target in targets:
+            out[target] = fraction
+    total = sum(out.values())
+    if abs(total - 1.0) > GB.MASS_TOLERANCE:
+        raise ValueError(
+            f"国标质量比之和是 {total}，与 1 差 {abs(total - 1.0):.2e}，"
+            f"超出容差 {GB.MASS_TOLERANCE}（表 6 抄错了？）")
+    return out
+
+
+def gb_centroid_ratios(sex=GB_MALE):
+    """段名 -> 质心距**本骨架 near 端**占段长的比例，按表 7。
+
+    表 7 的 `Lcs` 是「距解剖上端」。四肢的 near 就是上端，直接用；
+    `GB_NEAR_IS_LOWER` 里那两段（head_neck、trunk）的 near 在下端，要取 1 − Lcs。
+    躯干是合并段，比例走 `GB.trunk_merged_ratio()`（从表 2/3 反解）。
+    """
+    out = {}
+    for name in NAMES:
+        kind = base_kind(name)
+        ratio = (GB.trunk_merged_ratio(sex) if kind == "trunk"
+                 else GB.CENTROID_PCT[kind][sex] / 100.0)
+        out[name] = (1.0 - ratio) if kind in GB_NEAR_IS_LOWER else ratio
+    return out
+
+
+def gb_centres(joints, sex=GB_MALE):
+    """按国标比例把每段质心放在关节连线上。返回 (段名 -> 位置)。"""
+    ratios = gb_centroid_ratios(sex)
+    out = {}
+    for name, proximal, distal, _driver in SEGMENTS:
+        near, far = _segment_endpoints(joints, proximal, distal)
+        out[name] = near + (far - near) * ratios[name]
     return out
 
 

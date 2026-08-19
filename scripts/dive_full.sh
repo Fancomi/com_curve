@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 跳水线跑一整轮：提取 + 三张图 + 正交四格视频 + 叠加视频。
+# 跳水线跑一整轮：提取 + 三张图 + 正交六格视频 + 叠加视频。
 #
 #   ./scripts/dive_full.sh FRAMES.bin.br
 #   ./scripts/dive_full.sh                # 不给参数就用 outputs 下最新那个 clip

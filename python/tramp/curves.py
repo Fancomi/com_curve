@@ -1,4 +1,4 @@
-"""四种重心口径的逐帧采样。**这是唯一一处知道"重心怎么算"的地方。**
+"""五种重心口径的逐帧采样。**这是唯一一处知道"重心怎么算"的地方。**
 
 原先五个脚本各写了一遍同样的循环（提取、体段、反算、渲染、校验），四份两两略有
 差别——加第五种口径要改五个文件。现在只需在 `Sampler._point` 里加一支。
@@ -9,6 +9,7 @@
 | `mesh` | 蒙皮网格的均质体积重心（散度定理） | 可变形体，每帧重新积分 |
 | `mujoco` | 仿 MuJoCo `subtree_com`：14 刚体，质量 = 体素体积 × ρ | 刚体近似，质量由网格形状决定 |
 | `anthro` | Dempster/Winter 体段质量比，质心在关节连线上 | 质量由人体测量学表决定，完全不看网格 |
+| `gb` | 国标 GB/T 17245-2004 表 6/7：质量比与质心比例（男/女两套） | 独立于 Dempster 的另一套人体测量学表 |
 
 单位是**厘米**（场景 system unit），Y 轴朝上，右手系。
 """
@@ -19,8 +20,8 @@ from ..common import signal as Sig
 from . import scene as F
 from .bodies import RigidBodies
 
-MODES = ("root", "mesh", "mujoco", "anthro")
-SEGMENTED = ("mujoco", "anthro")            # 有 14 个体段质心可画的口径
+MODES = ("root", "mesh", "mujoco", "anthro", "gb")
+SEGMENTED = ("mujoco", "anthro", "gb")     # 有 14 个体段质心可画的口径
 CM_PER_M = 100.0
 MODE_DOC = {
     "root": "world translation of the bind-skeleton root (pelvis)",
@@ -29,6 +30,8 @@ MODE_DOC = {
               "mesh volume x density, segment centroid frozen in the bind pose",
     "anthro": "Dempster(1955)/Winter(2009) segment mass fractions with centroids "
               "on joint lines",
+    "gb": "GB/T 17245-2004 mass fractions and centroid ratios (Table 6/7), "
+          "national adult human inertial parameters",
 }
 
 
@@ -97,15 +100,20 @@ class Sampler:
             return cache["mesh"]
         centres = self.segment_centres(key, stamp, cache)
         masses = (self.bodies.mass_kg if key == "mujoco"
-                  else self.bodies.anthro_mass)
+                  else self.bodies.anthro_mass if key == "anthro"
+                  else self.bodies.gb_mass)
         return G.weighted_centre(centres, masses)
 
     def segment_centres(self, key, stamp, cache=None):
-        """`mujoco` / `anthro` 的 14 个体段质心，(14, 3)。"""
+        """`mujoco` / `anthro` / `gb` 的 14 个体段质心，(14, 3)。"""
         if cache is not None and key in cache:
             return cache[key]
-        centres = (self.bodies.world_centres(stamp) if key == "mujoco"
-                   else self.bodies.anthro_centres(stamp))
+        if key == "mujoco":
+            centres = self.bodies.world_centres(stamp)
+        elif key == "anthro":
+            centres = self.bodies.anthro_centres(stamp)
+        else:
+            centres = self.bodies.gb_centres(stamp)
         if cache is not None:
             cache[key] = centres
         return centres
@@ -209,7 +217,7 @@ def flights(contacts, frames=None, include_edges=False):
 
 
 def gravity_report(data, keys, contacts, fps, trim=6):
-    """各口径在腾空段的重力拟合。这是四条曲线唯一的共同物理判据。"""
+    """各口径在腾空段的重力拟合。这是五条曲线唯一的共同物理判据。"""
     windows = flights(contacts)
     dt = 1.0 / fps
     return {

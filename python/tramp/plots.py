@@ -2,7 +2,7 @@
 
 三张图，各承载一件事：
 
-  curves.png     四条曲线差多少：高度叠放 / 单段放大 / 两个误差源 / 段质量占比
+  curves.png     五条曲线差多少：高度叠放 / 单段放大 / 三个误差源 / 段质量占比
   trajectory.png 轨迹长什么样：X-Y 按时间上色 / 各段腾空的高度-时间曲线叠放
   retarget.png   反算改了什么：被盯曲线 / 骨盆 / Δroot / 垂直速度
 
@@ -21,6 +21,7 @@ LABEL = {
     "mesh": "Mesh 体积重心（每帧积分）",
     "mujoco": "仿 MuJoCo（14 刚体 · 网格质量）",
     "anthro": "真实人体（Dempster 体段质量）",
+    "gb": "国标 GB/T 17245（表 6/7）",
 }
 
 
@@ -48,8 +49,8 @@ def height_axis(axis, data, meta, keys, cjk):
                   label=LABEL[key] if cjk else key)
     axis.axhline(meta["bed_rest_y_cm"], color=PS.DATUM, ls="--", lw=1.0)
     axis.set_ylabel("高度 Y (cm)" if cjk else "height Y (cm)")
-    axis.set_title("四种口径的重心高度（全片尺度下几乎重合）" if cjk
-                   else "centre-of-mass height, four definitions")
+    axis.set_title("五种口径的重心高度（全片尺度下几乎重合）" if cjk
+                   else "centre-of-mass height, five definitions")
     axis.legend(loc="lower right", fontsize=8, ncol=2)
     axis.grid(alpha=0.25)
 
@@ -75,7 +76,8 @@ def residual_axis(axis, data, meta, cjk):
     stats = meta["pairwise"]
     axis.axhline(0, color="#555", lw=0.8)
     pairs = (("mujoco", "mesh", "mesh_to_mujoco", "刚体近似的代价"),
-             ("anthro", "mujoco", "mujoco_to_anthro", "体段密度的代价"))
+             ("anthro", "mujoco", "mujoco_to_anthro", "体段密度的代价"),
+             ("gb", "anthro", "anthro_to_gb", "两套体段表的代价"))
     for high, low, key, text in pairs:
         entry = stats[key]
         label = (f"{high} − {low}：{text}（全片 σ={entry['dy_std_cm']:.2f} cm，"
@@ -92,17 +94,21 @@ def residual_axis(axis, data, meta, cjk):
 
 
 def mass_axis(axis, facts, cjk):
-    """段质量占比对照：网格体素给的 vs Dempster 表给的。
+    """段质量占比对照：网格体素给的 vs Dempster 表给的 vs 国标表给的。
 
-    这解释了 anthro 为什么与 mujoco 分歧——躯干占比 38% vs 50%，四肢相应偏重。
+    这解释了 anthro 为什么与 mujoco 分歧——躯干占比 38% vs 50%，四肢相应偏重；
+    gb 与 anthro 的躯干占比也差约 10 个百分点（45% vs 55%）。
     """
     entries = facts["segments"]
     positions = np.arange(len(entries))
-    axis.barh(positions - 0.2, [e["mesh_mass_pct"] for e in entries], height=0.38,
+    axis.barh(positions - 0.27, [e["mesh_mass_pct"] for e in entries], height=0.25,
               color=PS.COLOR["mujoco"], label="网格体素（均质）" if cjk else "voxels")
-    axis.barh(positions + 0.2, [e["dempster_mass_pct"] for e in entries],
-              height=0.38, color=PS.COLOR["anthro"],
+    axis.barh(positions, [e["dempster_mass_pct"] for e in entries],
+              height=0.25, color=PS.COLOR["anthro"],
               label="Dempster 表" if cjk else "Dempster")
+    axis.barh(positions + 0.27, [e["gb_mass_pct"] for e in entries],
+              height=0.25, color=PS.COLOR["gb"],
+              label="国标 GB/T 17245" if cjk else "GB/T 17245")
     axis.set_yticks(positions)
     axis.set_yticklabels([e["name"] for e in entries], fontsize=8)
     axis.invert_yaxis()
@@ -124,9 +130,9 @@ def curves_figure(data, meta, path, cjk):
     gravity = meta["gravity"]["per_curve"]
     summary = "   ".join(f"{k} {gravity[k]['gravity_mean']:+.2f}" for k in keys)
     return PS.finish(figure, path,
-                     (f"蹦床重心：四种计算口径 · {meta['frames'][1]} 帧 @ "
+                     (f"蹦床重心：五种计算口径 · {meta['frames'][1]} 帧 @ "
                       f"{meta['fps']:g} fps · 腾空段重力拟合 {summary} m/s²") if cjk
-                     else f"four definitions · gravity fit {summary}")
+                     else f"five definitions · gravity fit {summary}")
 
 
 def trajectory_figure(data, meta, path, cjk):

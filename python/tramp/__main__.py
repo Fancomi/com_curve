@@ -57,7 +57,7 @@ def _columns(data, keys, fps):
 
 
 def step_extract(args):
-    """采四条曲线，写 CSV/JSON/NPZ + 一个带动画的 FBX。"""
+    """采五条曲线，写 CSV/JSON/NPZ + 一个带动画的 FBX。"""
     manager, scene = _load_scene(args)
     try:
         keys = tuple(args.modes)

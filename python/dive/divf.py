@@ -12,9 +12,12 @@ kp3d_n, fps, flags。之后每帧一条定长记录：
         +40  patch      i32
     float32 顶点块：skin_n×3, skel_n×3, kp3d_n×3
 
-**skel 与 kp3d 两块只参与步长计算，从不读取**：writer 目前把 kp3d 全写 0（没把
-`PoseResult.kp3d` 搬进来），skel 也不是这条线要的东西。所以「根骨骼」用 rest pose 上
-离骨盆最近的一撮顶点的均值代理，见 `align.pelvis_ids`。
+**kp3d 那块是全零**：writer 没把 `PoseResult.kp3d` 搬进来，所以没有真正的关节位置。
+「根骨骼」用 rest pose 上离骨盆最近的一撮顶点的均值代理，见 `align.pelvis_ids`。
+
+**skel 那块有数据**，是 SKEL 生物力学骨架的表面网格（3271 顶点，`bone_verts_indices`
+给出每个顶点属于哪根骨）。`gb` 口径要读它——国标表 1 的体表骨性标志绝大多数标在骨骼
+层上，见 `landmarks.py`。`record(want_skel=True)` 才读，默认跳过。
 """
 import struct
 import subprocess
@@ -82,8 +85,12 @@ def header(raw):
                 kp_n=kp_n, fps=fps, flags=flags, per=per, pfh=pfh)
 
 
-def record(raw, head, index):
-    """一帧：crop 相机参数 + skin 顶点 + 是否可用。"""
+def record(raw, head, index, want_skel=False):
+    """一帧：crop 相机参数 + skin 顶点（可选 skel 顶点）+ 是否可用。
+
+    `want_skel` 只有 `gb` 口径要——国标那些体表骨突绝大多数标在骨骼层上。
+    默认不读，省掉每帧 3271×3 的一次拷贝。
+    """
     off = HEADER_BYTES + index * head["per"]
     status, = struct.unpack_from("<I", raw, off + 4)
     cam = np.array(struct.unpack_from("<3f", raw, off + 8), np.float64)
@@ -95,5 +102,11 @@ def record(raw, head, index):
                              np.float64)
     usable = (bool(status & 1) and np.isfinite(skin).all()
               and not np.allclose(skin, 0))
-    return dict(status=int(status), usable=usable, cam=cam, focal=float(focal),
-                bbox=bbox, patch=int(patch), skin=skin)
+    out = dict(status=int(status), usable=usable, cam=cam, focal=float(focal),
+               bbox=bbox, patch=int(patch), skin=skin)
+    if want_skel and head["skel_n"]:
+        out["skel"] = np.frombuffer(
+            raw, "<f4", head["skel_n"] * 3,
+            off + head["pfh"] + head["skin_n"] * 12).reshape(
+                head["skel_n"], 3).astype(np.float64)
+    return out

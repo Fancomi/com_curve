@@ -34,16 +34,19 @@ import numpy as np
 from ..common import geometry as G
 from ..common import signal as Sig
 from . import divf
+from . import landmarks as Lm
 
 SOURCE_W = 1920.0
 SOURCE_H = 1080.0
 GRAVITY = 9.81
 SCALE_CHOICES = ("metrics", "hsmr", "gravity")
-MODES = ("root", "mesh")
+MODES = ("root", "mesh", "gb")
 MODE_DOC = {
     "root": "pelvis proxy: mean of a fixed vertex set near the anatomical pelvis "
             "in the rest pose (frames.bin has no real root joint)",
     "mesh": "homogeneous volume centroid of the skin mesh, per frame",
+    "gb": "GB/T 17245-2004 15-segment model: masses from Table 6, centroids at "
+          "Table 7 ratios on hand-labelled surface bony landmarks",
 }
 # 抛物线拟合之后、渲染之前的轻度贝塞尔重采样。`n_ctrl` 是"约 100 帧时的控制点数"，
 # 更长的连续有效段会按比例加控制点，避免 8 个点硬套 400 帧把整段弧抹平。
@@ -149,7 +152,8 @@ class Clip:
     """
 
     def __init__(self, frames_path, skin_obj, metrics, scale_mode="metrics",
-                 fps=None, trim=8, pelvis_count=48, verbose=True):
+                 fps=None, trim=8, pelvis_count=48, verbose=True,
+                 landmarks=None):
         raw = divf.read(frames_path)
         self.header = divf.header(raw)
         self.rest, self.faces = divf.load_obj(skin_obj)
@@ -159,10 +163,16 @@ class Clip:
                          or self.header["fps"] or 60.0)
         self.trim = trim
         self.count = self.header["n"]
+        # gb 口径要读每帧的 skel 块（国标骨突多标在骨骼上）；没给标注就不采这条。
+        self.landmarks = landmarks
+        self.sampler = (Lm.GbSampler(landmarks) if landmarks is not None else None)
+        self.modes = MODES if self.sampler is not None else tuple(
+            k for k in MODES if k != "gb")
 
         self.records = {}
         for index in range(self.count):
-            record = divf.record(raw, self.header, index)
+            record = divf.record(raw, self.header, index,
+                                 want_skel=self.sampler is not None)
             if record["usable"]:
                 self.records[index] = record
         if not self.records:
@@ -171,10 +181,8 @@ class Clip:
         self.frames = np.arange(self.count, dtype=np.int32)
         self.status = np.array([self.records[i]["status"] if i in self.records else 0
                                 for i in range(self.count)], np.int32)
-        self.local = {"root": np.full((self.count, 3), np.nan),
-                      "mesh": np.full((self.count, 3), np.nan)}
-        self.pixels = {"root": np.full((self.count, 2), np.nan),
-                       "mesh": np.full((self.count, 2), np.nan)}
+        self.local = {key: np.full((self.count, 3), np.nan) for key in self.modes}
+        self.pixels = {key: np.full((self.count, 2), np.nan) for key in self.modes}
         for index, record in self.records.items():
             skin = record["skin"]
             try:
@@ -183,7 +191,10 @@ class Clip:
                 centre = skin.mean(0)
             self.local["mesh"][index] = centre
             self.local["root"][index] = skin[self.pelvis].mean(0)
-            for key in MODES:
+            if self.sampler is not None:
+                self.local["gb"][index] = self.sampler.centre(
+                    {"skin": skin, "skel": record["skel"]})
+            for key in self.modes:
                 self.pixels[key][index] = project_source(self.local[key][index],
                                                          record)
 
@@ -262,12 +273,11 @@ class Clip:
         return (left, right)
 
     def _place(self, scale):
-        """按给定 s 放置全片。返回 {meshes, root, mesh, volume, valid}。"""
-        out = {"root": np.full((self.count, 3), np.nan),
-               "mesh": np.full((self.count, 3), np.nan),
-               "volume": np.full(self.count, np.nan),
-               "valid": np.zeros(self.count, np.int8),
-               "meshes": [None] * self.count}
+        """按给定 s 放置全片。返回 {meshes, root, mesh, gb, volume, valid}。"""
+        out = {key: np.full((self.count, 3), np.nan) for key in self.modes}
+        out.update({"volume": np.full(self.count, np.nan),
+                    "valid": np.zeros(self.count, np.int8),
+                    "meshes": [None] * self.count})
         for index, record in self.records.items():
             placed = place_on_plane(record["skin"], record, scale, self.scale_hsmr)
             try:
@@ -276,6 +286,13 @@ class Clip:
             except ValueError:
                 out["mesh"][index] = placed.mean(0)
             out["root"][index] = placed[self.pelvis].mean(0)
+            if self.sampler is not None:
+                # 骨骼层也要放到同一个平面上：`place_on_plane` 用的是**该顶点自己**
+                # 在源视频里的投影，所以两层各放一次，结果自然同一坐标系。
+                placed_skel = place_on_plane(record["skel"], record, scale,
+                                             self.scale_hsmr)
+                out["gb"][index] = self.sampler.centre(
+                    {"skin": placed, "skel": placed_skel})
             out["meshes"][index] = placed
             out["valid"][index] = 1
         return out
@@ -326,7 +343,7 @@ class Clip:
             return out
         span = np.arange(self.flight[0], self.flight[1] + 1)
         dt = 1.0 / self.fps
-        for key in MODES:
+        for key in self.modes:
             series = getattr(self, key)[span, 1]
             height, mask = _fill_gaps(series)
             if mask.sum() < 5:
@@ -350,6 +367,22 @@ class Clip:
         return {"closed_manifold": closed, "edges": edges,
                 "max_faces_per_edge": max_shared, "triangles": int(len(self.faces))}
 
+    def gb_facts(self):
+        """gb 口径的标注与分段事实。没采这条曲线时返回 None。
+
+        段长与国标反解的占身高比例并排列出——这是「端点接错」唯一能自动抓住的判据。
+        用第一个有效帧的 local 顶点（未放到平面上）：那是 HSMR 自己那套米，段长比例
+        与 s 无关，不受尺度口径影响。
+        """
+        if self.sampler is None:
+            return None
+        index = next(iter(self.records))
+        record = self.records[index]
+        return {**self.landmarks.facts(),
+                **self.sampler.facts({"skin": record["skin"],
+                                 "skel": record["skel"]}),
+                "reference_frame": int(index)}
+
     def events(self):
         """metrics.json 里的四个事件帧。"""
         summary = self.metrics.get("summary") or {}
@@ -369,7 +402,7 @@ class Clip:
             raise ValueError(f"贝塞尔控制点数至少 2，给了 {n_ctrl}")
         valid = self.valid == 1
         stats = {}
-        for key in MODES:
+        for key in self.modes:
             original = getattr(self, key)
             smoothed = Sig.smooth_track(original, valid, n_ctrl=n_ctrl)
             good = valid & np.isfinite(original).all(1) & np.isfinite(smoothed).all(1)

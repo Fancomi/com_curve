@@ -3,5 +3,11 @@ outputs/
 # 源数据（软链接或大文件）手工放，不进库
 inputs/*
 !inputs/.gitkeep
+# 例外：手工标注的国标体表骨突（20 个顶点索引，6 KB）。重标一次要几十分钟，
+# 而且它决定 dive 的 gb 曲线——这是**不可重建**的产物，必须进库。
+!inputs/gb_landmarks.json
 __pycache__/
 *.pyc
+.DS_Store
+# 标注页面的 three.js —— 1.2 MB 的第三方库，从 label_mocap 拷（见该目录 README）
+tools/gb_landmark_label/three.module.js

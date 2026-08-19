@@ -81,7 +81,9 @@ def _weights(take, key):
     if key not in Cv.SEGMENTED:
         return None
     bodies = take.sampler.bodies
-    masses = bodies.mass_kg if key == "mujoco" else bodies.anthro_mass
+    masses = (bodies.mass_kg if key == "mujoco"
+              else bodies.anthro_mass if key == "anthro"
+              else bodies.gb_mass)
     return masses / masses.sum()
 
 

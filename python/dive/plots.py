@@ -15,7 +15,8 @@ from ..common.plotstyle import plt
 from . import align as A
 
 LABEL = {"root": "骨盆代理（rest 邻域顶点均值）",
-         "mesh": "Mesh 体积重心（均质）"}
+         "mesh": "Mesh 体积重心（均质）",
+         "gb": "国标 GB/T 17245（15 段 · 体表骨突）"}
 EVENT_STYLE = {
     "board_frame": ("起跳板", "#6b7280"),
     "jumping_frame": ("离板", "#2563eb"),
@@ -23,6 +24,11 @@ EVENT_STYLE = {
     "water_entry_frame": ("入水", "#dc2626"),
 }
 SCALE_COLOUR = {"hsmr": "#7c3aed", "metrics": "#d1642a", "gravity": "#2f6f4f"}
+
+
+def curve_keys(meta):
+    """这份 JSON 里实际有哪几条曲线。没给标注时 `gb` 不存在，图不该硬画。"""
+    return tuple(key for key in A.MODES if key in (meta.get("modes") or {}))
 
 
 def masked(data, column):
@@ -57,11 +63,12 @@ def mark_events(axis, meta, cjk, text=True):
 
 def height_figure(data, meta, path, cjk):
     time = data["time_s"]
+    modes = curve_keys(meta)
     figure, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True,
                                 gridspec_kw={"height_ratios": [3, 1.4, 1.6]})
     top = axes[0]
     shade_flight(top, meta, cjk)
-    for key in A.MODES:
+    for key in modes:
         top.plot(time, masked(data, f"{key}_y_m"), color=PS.COLOR[key], lw=1.7,
                  label=LABEL[key] if cjk else key)
     top.axhline(0, color=PS.DATUM, ls="--", lw=1.0,
@@ -95,7 +102,7 @@ def height_figure(data, meta, path, cjk):
     bottom = axes[2]
     shade_flight(bottom, meta, cjk, label=False)
     bottom.axhline(0, color="#555", lw=0.8)
-    for key in A.MODES:
+    for key in modes:
         bottom.plot(time, data[f"{key}_vy_mps"], color=PS.COLOR[key], lw=1.3,
                     label=LABEL[key] if cjk else key)
     bottom.set_ylabel("垂直速度 (m/s)" if cjk else "vertical speed (m/s)")
@@ -109,6 +116,7 @@ def trajectory_figure(data, meta, path, cjk):
     from matplotlib.collections import LineCollection
 
     fps = float(meta["fps"])
+    modes = curve_keys(meta)
     figure, axes = plt.subplots(1, 2, figsize=(15, 6.5),
                                 gridspec_kw={"width_ratios": [1, 1.15]})
     left = axes[0]
@@ -147,7 +155,7 @@ def trajectory_figure(data, meta, path, cjk):
         first, last = int(flight[0]), int(flight[1])
         span = slice(first, last + 1)
         clock = np.arange(last - first + 1) / fps
-        for key in A.MODES:
+        for key in modes:
             right.plot(clock, masked(data, f"{key}_y_m")[span], color=PS.COLOR[key],
                        lw=1.7, label=LABEL[key] if cjk else key)
         height = masked(data, "mesh_y_m")[span]

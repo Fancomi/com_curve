@@ -1,0 +1,298 @@
+{
+  "standard": "GB/T 17245-2004 表 1 人体体段划分分界点（体表骨性标志）",
+  "note": "vertex 是 SKEL/SMPL 原生索引（skin 6890 / skel 247252），无抽稀、无中间映射；下游 verts[index] 直接可用",
+  "pose": "SKEL forward(poses=0, betas=0, trans=0) — true T-pose",
+  "axes": {
+    "up": "+Y",
+    "front": "+Z",
+    "right": "-X",
+    "note": "量出来的：toes 的 z 大于 pelvis 所以前方是 +Z；femur_r 的 x 为负所以右侧是 -X"
+  },
+  "skin_count": 6890,
+  "skel_count": 247252,
+  "complete": true,
+  "picked": 20,
+  "total": 20,
+  "landmarks": {
+    "vertex": {
+      "vertex": 411,
+      "mesh": "skin",
+      "twin": 411,
+      "xyz": [
+        0.00213,
+        0.57761,
+        0.00839
+      ],
+      "cn": "头顶点",
+      "gb_key": "vertex",
+      "side": null,
+      "bone": "head"
+    },
+    "cervicale": {
+      "vertex": 172769,
+      "mesh": "skel",
+      "twin": 172669,
+      "xyz": [
+        0.00284,
+        0.27618,
+        -0.05133
+      ],
+      "cn": "颈椎点",
+      "gb_key": "cervicale",
+      "side": null,
+      "bone": "thorax"
+    },
+    "substernale": {
+      "vertex": 71741,
+      "mesh": "skel",
+      "twin": 71747,
+      "xyz": [
+        -0.00053,
+        0.06828,
+        0.11377
+      ],
+      "cn": "胸下点",
+      "gb_key": "substernale",
+      "side": null,
+      "bone": "thorax"
+    },
+    "perineum": {
+      "vertex": 1515,
+      "mesh": "skin",
+      "twin": 1515,
+      "xyz": [
+        -0.00227,
+        -0.37191,
+        -0.02155
+      ],
+      "cn": "会阴点",
+      "gb_key": "perineum",
+      "side": null,
+      "bone": "pelvis"
+    },
+    "iliospinale_R": {
+      "vertex": 914,
+      "mesh": "skel",
+      "twin": 174,
+      "xyz": [
+        -0.10884,
+        -0.23969,
+        0.10216
+      ],
+      "cn": "髂前上棘点·右",
+      "gb_key": "iliospinale",
+      "side": "R",
+      "bone": "pelvis"
+    },
+    "iliospinale_L": {
+      "vertex": 181,
+      "mesh": "skel",
+      "twin": 913,
+      "xyz": [
+        0.12885,
+        -0.24261,
+        0.09168
+      ],
+      "cn": "髂前上棘点·左",
+      "gb_key": "iliospinale",
+      "side": "L",
+      "bone": "pelvis"
+    },
+    "tibiale_R": {
+      "vertex": 4703,
+      "mesh": "skel",
+      "twin": 10986,
+      "xyz": [
+        -0.06812,
+        -0.74007,
+        0.02784
+      ],
+      "cn": "胫骨点·右",
+      "gb_key": "tibiale",
+      "side": "R",
+      "bone": "tibia"
+    },
+    "tibiale_L": {
+      "vertex": 10981,
+      "mesh": "skel",
+      "twin": 4698,
+      "xyz": [
+        0.07456,
+        -0.73903,
+        0.0252
+      ],
+      "cn": "胫骨点·左",
+      "gb_key": "tibiale",
+      "side": "L",
+      "bone": "tibia"
+    },
+    "sphyrion_R": {
+      "vertex": 5342,
+      "mesh": "skel",
+      "twin": 11625,
+      "xyz": [
+        -0.13068,
+        -1.14161,
+        -0.03557
+      ],
+      "cn": "内踝点·右",
+      "gb_key": "sphyrion",
+      "side": "R",
+      "bone": "talus"
+    },
+    "sphyrion_L": {
+      "vertex": 11625,
+      "mesh": "skel",
+      "twin": 5342,
+      "xyz": [
+        0.12801,
+        -1.14049,
+        -0.03275
+      ],
+      "cn": "内踝点·左",
+      "gb_key": "sphyrion",
+      "side": "L",
+      "bone": "talus"
+    },
+    "sole_R": {
+      "vertex": 6442,
+      "mesh": "skel",
+      "twin": 12725,
+      "xyz": [
+        -0.09365,
+        -1.19916,
+        -0.07203
+      ],
+      "cn": "足底·右",
+      "gb_key": "sole",
+      "side": "R",
+      "bone": "calcn"
+    },
+    "sole_L": {
+      "vertex": 12725,
+      "mesh": "skel",
+      "twin": 6442,
+      "xyz": [
+        0.08789,
+        -1.19607,
+        -0.0686
+      ],
+      "cn": "足底·左",
+      "gb_key": "sole",
+      "side": "L",
+      "bone": "calcn"
+    },
+    "acromion_R": {
+      "vertex": 181201,
+      "mesh": "skel",
+      "twin": 224981,
+      "xyz": [
+        -0.14891,
+        0.27432,
+        -0.00496
+      ],
+      "cn": "肩峰点·右",
+      "gb_key": "acromion",
+      "side": "R",
+      "bone": "scapula"
+    },
+    "acromion_L": {
+      "vertex": 224981,
+      "mesh": "skel",
+      "twin": 181201,
+      "xyz": [
+        0.15127,
+        0.273,
+        -0.00417
+      ],
+      "cn": "肩峰点·左",
+      "gb_key": "acromion",
+      "side": "L",
+      "bone": "scapula"
+    },
+    "radiale_R": {
+      "vertex": 182432,
+      "mesh": "skel",
+      "twin": 226212,
+      "xyz": [
+        -0.44715,
+        0.21208,
+        -0.07623
+      ],
+      "cn": "桡骨点·右",
+      "gb_key": "radiale",
+      "side": "R",
+      "bone": "ulna"
+    },
+    "radiale_L": {
+      "vertex": 226212,
+      "mesh": "skel",
+      "twin": 182432,
+      "xyz": [
+        0.44469,
+        0.21089,
+        -0.07325
+      ],
+      "cn": "桡骨点·左",
+      "gb_key": "radiale",
+      "side": "L",
+      "bone": "ulna"
+    },
+    "stylion_R": {
+      "vertex": 182653,
+      "mesh": "skel",
+      "twin": 226433,
+      "xyz": [
+        -0.71556,
+        0.24328,
+        -0.02481
+      ],
+      "cn": "桡骨茎突点·右",
+      "gb_key": "stylion",
+      "side": "R",
+      "bone": "radius"
+    },
+    "stylion_L": {
+      "vertex": 226433,
+      "mesh": "skel",
+      "twin": 182653,
+      "xyz": [
+        0.71501,
+        0.24497,
+        -0.02762
+      ],
+      "cn": "桡骨茎突点·左",
+      "gb_key": "stylion",
+      "side": "L",
+      "bone": "radius"
+    },
+    "dactylion_R": {
+      "vertex": 184294,
+      "mesh": "skel",
+      "twin": 228074,
+      "xyz": [
+        -0.89582,
+        0.22392,
+        -0.05876
+      ],
+      "cn": "中指指尖点·右",
+      "gb_key": "dactylion",
+      "side": "R",
+      "bone": "hand"
+    },
+    "dactylion_L": {
+      "vertex": 228610,
+      "mesh": "skel",
+      "twin": 184830,
+      "xyz": [
+        0.91493,
+        0.23048,
+        -0.06038
+      ],
+      "cn": "中指指尖点·左",
+      "gb_key": "dactylion",
+      "side": "L",
+      "bone": "hand"
+    }
+  }
+}

@@ -18,9 +18,10 @@ VIEWS = (("front", 2, 0, -1), ("side", 0, 2, +1))
 VIEW_CN = {"front": "正视", "side": "侧视"}
 # 标签分两行：正视格只有约 240 px 宽，一行放不下"正视 · Mesh 体积重心(均质)"。
 MODE_CN = {"root": "根骨骼", "mesh": "Mesh 重心",
-           "mujoco": "仿 MuJoCo", "anthro": "真实人体"}
+           "mujoco": "仿 MuJoCo", "anthro": "真实人体", "gb": "国标 GB17245"}
 MODE_SUB = {"root": "Root_M(骨盆)", "mesh": "均质体积重心",
-            "mujoco": "14 刚体 · 网格质量", "anthro": "14 刚体 · Dempster 质量"}
+            "mujoco": "14 刚体 · 网格质量", "anthro": "14 刚体 · Dempster 质量",
+            "gb": "14 刚体 · 国标质量"}
 
 BODY_TINT = np.array([176, 190, 226], dtype=np.float64)     # BGR
 PROP_TINT = np.array([104, 104, 108], dtype=np.float64)
@@ -28,7 +29,7 @@ BED_TINT = np.array([132, 122, 96], dtype=np.float64)
 MARKER = {key: PS.bgr(key) for key in Cv.MODES}
 # before 那格的主曲线：灰蓝，"从前的样子"，不抢眼。
 BEFORE_TINT = (146, 127, 109)
-# 副轨迹（根骨骼虚线）用中性浅灰。它在两格里都出现，所以不能借用四种口径中任何一种
+# 副轨迹（根骨骼虚线）用中性浅灰。它在两格里都出现，所以不能借用五种口径中任何一种
 # 的颜色——尤其不能用 MARKER["root"] 的亮蓝：before 格的主角恰好就是"根骨骼被拉成
 # 抛物线"，两条蓝线叠在一起分不出主次。
 AUX_TINT = (176, 180, 182)

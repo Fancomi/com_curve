@@ -20,9 +20,44 @@ from ..common import plotstyle as PS
 from ..common import raster as R
 from . import align as A
 from . import curves as Cv
+from . import landmarks as Lm
 from . import plots, scenes
 
 STEPS = ("extract", "plot", "render", "overlay")
+
+
+def _open_landmarks(args, verbose=True):
+    """打开国标标志点标注；`--no-gb` 或文件缺失时返回 None（只采 root/mesh）。
+
+    标注在**稠密** SKEL 网格上（skin 6890 / skel 247252），而 DIVF 每帧只有简化
+    子集，所以要过一次 vertex mapping 的逆表。稠密 T-pose 由 SKEL 前向给出——
+    这一步要 torch，但只在启用 gb 时才 import，没装的机器照样能跑另两条曲线。
+    """
+    if args.no_gb:
+        return None
+    path = Path(args.landmarks or P.GB_LANDMARKS).expanduser()
+    if not path.is_file():
+        if verbose:
+            print(f"  （跳过 gb 口径：没有 {P.display(path)}）")
+        return None
+    try:
+        import numpy as np
+
+        skin_map = np.load(P.HSMR_DIR / "skin_vertex_mapping.npy")
+        skel_map = np.load(P.HSMR_DIR / "skel_vertex_mapping.npy")
+        dense_skin, dense_skel = Lm.dense_t_pose(args.hsmr_lite)
+        marks = Lm.Landmarks(path, skin_map, skel_map, dense_skin, dense_skel)
+    except Exception as error:                          # noqa: BLE001
+        if verbose:
+            print(f"  （跳过 gb 口径：{type(error).__name__}: {error}）")
+        return None
+    if verbose:
+        fallbacks = marks.facts()["fallbacks"]
+        note = (f"，{len(fallbacks)} 个点退到最近顶点 "
+                + "、".join(f"{k} {v:.1f}mm" for k, v in fallbacks.items())
+                if fallbacks else "，全部精确命中子集")
+        print(f"  国标标注 {P.display(path)}：{marks.facts()['count']} 个点{note}")
+    return marks
 
 
 def _open(args, verbose=True):
@@ -62,8 +97,10 @@ def _open(args, verbose=True):
     # 无 metrics 时默认 hsmr：metrics 尺度本身就不存在，硬用 metrics 只会退出。
     payload = P.read_json(metrics) if metrics is not None else {}
     chosen_scale = scale or ("metrics" if metrics is not None else "hsmr")
+    landmarks = _open_landmarks(args, verbose)
     clip = A.Clip(frames, skin, payload, chosen_scale,
-                  args.fps, args.trim, args.pelvis_count, verbose)
+                  args.fps, args.trim, args.pelvis_count, verbose,
+                  landmarks=landmarks)
     if clip.rest.shape[0] != clip.header["skin_n"]:
         raise SystemExit(f"skin 顶点数不符：obj={clip.rest.shape[0]} "
                          f"bin={clip.header['skin_n']}")
@@ -156,7 +193,7 @@ def step_render(args):
     painter = R.TextPainter()
     block = (analysis.get("per_curve") or {}).get("mesh") or {}
     events = clip.events()
-    width = sum(camera.width for camera in cameras.values()) * len(A.MODES)
+    width = sum(camera.width for camera in cameras.values()) * len(clip.modes)
     print(f"  {'，'.join(f'{scenes.VIEW_CN[k]} {c.width}px' for k, c in cameras.items())}"
           f"；成片 {width}×{args.height + 40}")
 
@@ -171,7 +208,7 @@ def step_render(args):
                         aux_colour=scenes.MARKER["root"],
                         value=lambda y: (f"Y {y:+.2f} m" if np.isfinite(y)
                                          else "无 mesh"))
-             for key in A.MODES]
+             for key in clip.modes]
     scale = {"unit": "m", "step": 1.0, "top": 84, "datum": 0.0, "tick": 22}
 
     for index in range(total):
@@ -229,7 +266,7 @@ def step_overlay(args):
     high = float(np.nanmax(clip.mesh[good, 1])) + 1.0
     velocity = Cv.speeds(clip)
     curves = {"frames": clip.frames, "valid": clip.valid}
-    for key in A.MODES:
+    for key in clip.modes:
         curves[f"{key}_y"] = getattr(clip, key)[:, 1]
         curves[f"{key}_vy"] = velocity[key][:, 1]
     meta = {"fps": clip.fps, "events": clip.events(), "flight": flight,
@@ -317,6 +354,13 @@ def build_parser():
                         help="腾空段重力拟合两端切除帧数")
     parser.add_argument("--pelvis-count", type=int, default=48,
                         help="骨盆代理取多少个顶点")
+    # gb 口径：国标 15 段，端点是手工标的体表骨突。标注缺失时自动跳过。
+    parser.add_argument("--landmarks", type=Path, default=None,
+                        help=f"国标标志点 JSON，默认 {P.display(P.GB_LANDMARKS)}")
+    parser.add_argument("--no-gb", action="store_true",
+                        help="不采 gb 曲线（省掉 SKEL 前向与每帧 skel 块）")
+    parser.add_argument("--hsmr-lite", type=Path, default=None,
+                        help="egl_render_haotian/src，gb 口径要它跑 SKEL 前向")
     parser.add_argument("--check", action="store_true",
                         help="逐顶点验证 global -> 2D 重投影（约 1 s）")
     # 抛物线拟合之后、渲染之前：轻度贝塞尔重采样。默认开。

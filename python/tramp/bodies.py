@@ -1,12 +1,14 @@
 """14 段刚体：编译期定质量与冻结质心，运行时只做 FK + 加权求和。
 
-这是 `mujoco` 与 `anthro` 两种口径共用的骨架。两者只在**质量从哪来**上分岔：
+这是 `mujoco` / `anthro` / `gb` 三种口径共用的骨架。三者只在**质量从哪来**上分岔：
 
   mujoco  质量来自网格自身：绑定姿态的实体体积按体段切开，每段 m = ρV
           （ρ 取 MuJoCo geom 的默认 1000 kg/m³），段质心冻结在绑定姿态。
           这就是 MuJoCo 的 `subtree_com`：编译期从 geom 推 inertial，运行时 FK。
   anthro  质量来自 Dempster/Winter 的体段质量比，与网格无关；段质心按表里的
           "距近端占段长的比例"落在关节连线上。运动生物力学的经典做法。
+  gb      质量与质心比例来自国标 GB/T 17245-2004（表 6/7），男/女两套值，
+          独立于 Dempster 的另一套人体测量学表。
 """
 import numpy as np
 
@@ -112,11 +114,12 @@ class RigidBodies:
     """绑定姿态编译出的 14 段刚体。逐帧只需 `world_centres` / `world_joints`。"""
 
     def __init__(self, scene, node, skin, pitch=VOXEL_PITCH,
-                 density=S.MUJOCO_DENSITY):
+                 density=S.MUJOCO_DENSITY, sex=S.GB_MALE):
         root = scene.GetRootNode()
         vertices, joints = bind_pose(node, skin)
         self.names = list(S.NAMES)
         self.pitch, self.density = pitch, density
+        self.sex = sex
         self.height_cm = float(vertices[:, 1].max() - vertices[:, 1].min())
         self.floor_cm = float(vertices[:, 1].min())
         self.bind_joints = joints
@@ -140,7 +143,8 @@ class RigidBodies:
         self.mass_kg = self.volume_cm3 * 1e-6 * density
         table = S.dempster_mass_fractions()
         self.anthro_mass = np.array([table[name] for name in self.names])
-
+        self.gb_mass = np.array([S.gb_mass_fractions(sex)[name]
+                                 for name in self.names])
         self.drivers, self.bind_inverse = [], []
         for _name, _proximal, _distal, driver in S.SEGMENTS:
             self.drivers.append(F.find_node(root, driver))
@@ -190,10 +194,16 @@ class RigidBodies:
         centres = S.anthropometric_centres(self.world_joints(stamp))
         return np.array([centres[name] for name in self.names])
 
+    def gb_centres(self, stamp):
+        """各段质心，按 GB/T 17245-2004 表 7 比例落在关节连线上，(14, 3)。"""
+        centres = S.gb_centres(self.world_joints(stamp), self.sex)
+        return np.array([centres[name] for name in self.names])
+
     def facts(self, mesh_volume_cm3):
         """写进 JSON 的口径与体段质量表。"""
         fractions = self.volume_cm3 / self.volume_cm3.sum()
         table = S.dempster_mass_fractions()
+        gb_table = S.gb_mass_fractions(self.sex)
         return {
             "voxel_pitch_cm": self.pitch,
             "voxel_count": self.voxel_count,
@@ -209,6 +219,7 @@ class RigidBodies:
                  "volume_l": round(float(self.volume_cm3[i] / 1000), 4),
                  "mass_kg": round(float(self.mass_kg[i]), 3),
                  "mesh_mass_pct": round(float(fractions[i] * 100), 2),
-                 "dempster_mass_pct": round(table[name] * 100, 2)}
+                 "dempster_mass_pct": round(table[name] * 100, 2),
+                 "gb_mass_pct": round(gb_table[name] * 100, 2)}
                 for i, name in enumerate(self.names)],
         }
