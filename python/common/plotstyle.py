@@ -8,10 +8,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# 五种重心口径各一色，plot 与 render 共用同一套（render 侧按 BGR 反转）。
-# gb 用墨青色，与 anthro 的紫拉开距离（它俩的差别就是本项目的第五个结论）。
-COLOR = {"root": "#1f6feb", "mesh": "#d1642a",
-         "mujoco": "#2f8f5b", "anthro": "#8b3fa8", "gb": "#0e8a86"}
+# 两种重心口径各一色，plot 与 render 共用同一套（render 侧按 BGR 反转）。
+# `spin` 是整体旋转修复的 after，不是重心口径，但同样两条图/视频共用。
+COLOR = {"mesh": "#d1642a", "gb": "#0e8a86", "spin": "#8b3fa8"}
 # before/after 对比：before 灰蓝（"从前的样子"，不抢眼），after 用该口径原色。
 BEFORE = "#6d7f92"
 CONTACT = "#9aa4b2"      # 触床灰带

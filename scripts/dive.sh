@@ -5,10 +5,10 @@
 #
 # STEPS 逗号分隔、按给出顺序执行：
 #   extract  frames.bin.br -> outputs/dive_<clip>/curve.{csv,json,npz}
-#            三种口径：root(骨盆代理) / mesh(体积重心) / gb(国标 15 段·体表骨突)，
-#            单位米。gb 要 inputs/gb_landmarks.json，缺了自动跳过。
+#            两种口径：mesh(体积重心) / gb(国标 15 段·体表骨突)，单位米。
+#            gb 要 inputs/gb_landmarks.json，缺了自动跳过。
 #   plot     CSV -> height.png / trajectory.png / scale.png
-#   render   正交六格视频（无底图）-> outputs/dive_<clip>/render.mp4
+#   render   正交四格视频（无底图）-> outputs/dive_<clip>/render.mp4
 #   overlay  叠回源视频 -> outputs/dive_<clip>/overlay.mp4
 #
 # 常用：
@@ -29,7 +29,7 @@
 #   hsmr     HSMR 自己的深度 0.010804，体高自洽但 g=-12.1
 #   gravity  反解出 g=-9.81 的那个值，用它报 g 是循环论证，只作对照
 #
-# 曲线平滑（默认开）：抛物线拟合之后对 root/mesh 做轻度贝塞尔重采样，再进
+# 曲线平滑（默认开）：抛物线拟合之后对 mesh/gb 做轻度贝塞尔重采样，再进
 # plot/render/overlay。--no-bezier-smooth 关闭；--bezier-ctrl N 调控制点数。
 #
 # 不需要 FBX SDK。完整选项：python -m python.dive --help

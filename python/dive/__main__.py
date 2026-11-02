@@ -27,11 +27,11 @@ STEPS = ("extract", "plot", "render", "overlay")
 
 
 def _open_landmarks(args, verbose=True):
-    """打开国标标志点标注；`--no-gb` 或文件缺失时返回 None（只采 root/mesh）。
+    """打开国标标志点标注；`--no-gb` 或文件缺失时返回 None（只采 mesh）。
 
     标注在**稠密** SKEL 网格上（skin 6890 / skel 247252），而 DIVF 每帧只有简化
     子集，所以要过一次 vertex mapping 的逆表。稠密 T-pose 由 SKEL 前向给出——
-    这一步要 torch，但只在启用 gb 时才 import，没装的机器照样能跑另两条曲线。
+    这一步要 torch，但只在启用 gb 时才 import，没装的机器照样能跑 mesh 曲线。
     """
     if args.no_gb:
         return None
@@ -99,8 +99,7 @@ def _open(args, verbose=True):
     chosen_scale = scale or ("metrics" if metrics is not None else "hsmr")
     landmarks = _open_landmarks(args, verbose)
     clip = A.Clip(frames, skin, payload, chosen_scale,
-                  args.fps, args.trim, args.pelvis_count, verbose,
-                  landmarks=landmarks)
+                  args.fps, args.trim, verbose, landmarks=landmarks)
     if clip.rest.shape[0] != clip.header["skin_n"]:
         raise SystemExit(f"skin 顶点数不符：obj={clip.rest.shape[0]} "
                          f"bin={clip.header['skin_n']}")
@@ -138,9 +137,9 @@ def step_extract(args):
                          smooth=smooth, flight=flight)
     print(f"  wrote {P.display(P.write_json(out / 'curve.json', meta))}")
     np.savez_compressed(out / "curve.npz", frames=clip.frames, valid=clip.valid,
-                        status=clip.status, root=clip.root, mesh=clip.mesh,
-                        volume=clip.volume, fps=np.array(clip.fps),
-                        scale=np.array(clip.scale))
+                        status=clip.status, volume=clip.volume,
+                        fps=np.array(clip.fps), scale=np.array(clip.scale),
+                        **{key: getattr(clip, key) for key in clip.modes})
     print(f"  wrote {P.display(out / 'curve.npz')}")
 
     print(f"  可用 mesh 帧 {int((clip.valid == 1).sum())}/{clip.count}，"
@@ -149,10 +148,13 @@ def step_extract(args):
         print(f"    {key:5s} 腾空 g={block['gravity_trimmed_mps2']:+.2f} m/s²  "
               f"顶点 {block['apex_m']:.2f} m  上升 {block['rise_m']:.2f} m  "
               f"残差 {block['fit_rms_trimmed_m']:.3f} m")
-    offset = clip.mesh - clip.root
-    good = clip.valid == 1
-    print(f"    mesh-root ΔY 均值 {np.abs(offset[good, 1]).mean() * 100:.1f} cm，"
-          f"最大 {np.abs(offset[good, 1]).max() * 100:.1f} cm")
+    if "gb" in clip.modes:
+        # gb 个别帧可能算不出（nan），只统计两条都有限的帧。
+        offset = clip.gb[:, 1] - clip.mesh[:, 1]
+        good = (clip.valid == 1) & np.isfinite(offset)
+        if good.any():
+            print(f"    gb-mesh ΔY 均值 {np.abs(offset[good]).mean() * 100:.1f} cm，"
+                  f"最大 {np.abs(offset[good]).max() * 100:.1f} cm")
 
 
 def step_plot(args):
@@ -169,7 +171,7 @@ def step_plot(args):
 
 
 def step_render(args):
-    """正交四格：正视/侧视 × 骨盆代理/Mesh 重心。"""
+    """正交四格：正视/侧视 × Mesh 重心/国标 15 段（无 gb 时两格）。"""
     import cv2
 
     from ..common import grid as Grid
@@ -197,15 +199,15 @@ def step_render(args):
     print(f"  {'，'.join(f'{scenes.VIEW_CN[k]} {c.width}px' for k, c in cameras.items())}"
           f"；成片 {width}×{args.height + 40}")
 
-    # mesh 格里额外淡画 root（虚线），让两者的差在同一格里可见；root 格不叠 mesh，
+    # gb 格里额外淡画 mesh（虚线），让两者的差在同一格里可见；mesh 格不叠 gb，
     # 避免两条实线糊在一起分不出主次。副标题按视角变化，把"正视与源视频投影一致 /
     # 侧视只有体厚"写进每一格——这是这条线最容易被误读的地方。
     specs = [Grid.panel(scenes.MODE_CN[key],
                         lambda view, k=key: (f"{scenes.MODE_SUB[k]} · "
                                              f"{scenes.VIEW_SUB[view]}"),
                         scenes.MARKER[key], getattr(clip, key),
-                        aux=clip.root if key == "mesh" else None,
-                        aux_colour=scenes.MARKER["root"],
+                        aux=clip.mesh if key == "gb" else None,
+                        aux_colour=scenes.MARKER["mesh"],
                         value=lambda y: (f"Y {y:+.2f} m" if np.isfinite(y)
                                          else "无 mesh"))
              for key in clip.modes]
@@ -305,15 +307,16 @@ def step_overlay(args):
             R.draw_mesh(frame, camera, placed, clip.faces, scenes.OVERLAY_TINT,
                         alpha=args.alpha, silhouette=rim,
                         rim_colour=scenes.SILHOUETTE)
-        for key, thickness in (("root", 1), ("mesh", 3)):
+        # 倒序画：gb（细线、空心小环）先落，mesh 后落压在上面——HUD 的 g 报的是
+        # mesh，它才是主角；两者常常相距不到 20 px，同样大小会叠成一团。
+        for key in reversed(clip.modes):
             R.draw_trail(frame, camera, getattr(clip, key), index,
                          scenes.MARKER[key], span=args.recent,
-                         thickness=thickness, background=None,
+                         thickness=3 if key == "mesh" else 1, background=None,
                          faint=R.fade(scenes.MARKER[key], 0.42))
-        R.draw_marker(frame, camera, clip.root[index], scenes.MARKER["root"],
-                      hollow=True, style="ring")
-        R.draw_marker(frame, camera, clip.mesh[index], scenes.MARKER["mesh"],
-                      style="ring")
+        for key in reversed(clip.modes):
+            R.draw_marker(frame, camera, getattr(clip, key)[index],
+                          scenes.MARKER[key], hollow=key != "mesh", style="ring")
         scenes.draw_hud(frame, painter, curves, meta, index, bool(good[index]))
 
         if panel is not None:
@@ -352,8 +355,6 @@ def build_parser():
     parser.add_argument("--fps", type=float, default=None)
     parser.add_argument("--trim", type=int, default=8,
                         help="腾空段重力拟合两端切除帧数")
-    parser.add_argument("--pelvis-count", type=int, default=48,
-                        help="骨盆代理取多少个顶点")
     # gb 口径：国标 15 段，端点是手工标的体表骨突。标注缺失时自动跳过。
     parser.add_argument("--landmarks", type=Path, default=None,
                         help=f"国标标志点 JSON，默认 {P.display(P.GB_LANDMARKS)}")

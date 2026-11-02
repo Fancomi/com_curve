@@ -317,6 +317,13 @@ class SkinnedMesh:
         return out
 
 
+def euler_pre_rotation(node):
+    """(PreRotation 度 (3,), 旋转顺序是否 XYZ)。父链恒等时世界旋转 = Pre · Euler(key)。"""
+    pivot = fbx.FbxNode.EPivotSet.eSourcePivot
+    pre = np.array(list(node.GetPreRotation(pivot))[:3], dtype=np.float64)
+    return pre, node.GetRotationOrder(pivot) == fbx.EFbxRotationOrder.eEulerXYZ
+
+
 def node_translation(node, stamp):
     """节点世界位置，(3,) ndarray。"""
     point = node.EvaluateGlobalTransform(stamp).GetT()

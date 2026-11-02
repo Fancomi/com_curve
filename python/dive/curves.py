@@ -49,7 +49,6 @@ def write_csv(path, clip, reference):
                ("status", clip.status)]
     for key in clip.modes:
         columns += T.vector_columns(key, getattr(clip, key), "m")
-    columns += T.vector_columns("offset", clip.mesh - clip.root, "m")
     for key in clip.modes:
         columns += [(f"{key}_vy_mps", velocity[key][:, 1]),
                     (f"{key}_speed_mps", np.linalg.norm(velocity[key], axis=1))]
@@ -69,8 +68,6 @@ def build_meta(clip, paths, check=None, smooth=None, flight=None):
     `flight` 应在贝塞尔平滑**之前**算好再传入：腾空 g 是对原始曲线的物理校验，
     平滑后再拟合会把"看起来更接近 9.81"误当成链路更准。
     """
-    offset = clip.mesh - clip.root
-    good = np.isfinite(offset).all(axis=1)
     events = clip.events()
     return {
         "source": {key: str(value) for key, value in paths.items()},
@@ -91,14 +88,8 @@ def build_meta(clip, paths, check=None, smooth=None, flight=None):
         },
         "divf_header": {k: int(v) for k, v in clip.header.items()},
         "topology": clip.topology(),
-        "pelvis_vertex_count": int(len(clip.pelvis)),
         "events": {k: (int(v) if v is not None else None)
                    for k, v in events.items()},
-        "mesh_minus_root_m": {
-            "mean": [round(float(v), 4) for v in offset[good].mean(0)],
-            "std": [round(float(v), 4) for v in offset[good].std(0)],
-            "max_abs": [round(float(v), 4) for v in np.abs(offset[good]).max(0)],
-        } if good.any() else None,
         "flight": flight if flight is not None else clip.fit_flight(),
         "smooth": smooth or {"enabled": False},
         "reprojection": check,

@@ -1,7 +1,7 @@
 """dive 线的图表。只吃 CSV + JSON，不需要 frames.bin。
 
 三张图：
-  height.png      高度 / mesh−root 差 / 垂直速度
+  height.png      高度 / gb−mesh 差（有 gb 时）/ 垂直速度
   trajectory.png  X-Y 轨迹（按时间上色）+ 腾空段与理想抛物线对照
   scale.png       三种尺度口径下同一条曲线的样子
 
@@ -14,8 +14,7 @@ from ..common import signal as Sig
 from ..common.plotstyle import plt
 from . import align as A
 
-LABEL = {"root": "骨盆代理（rest 邻域顶点均值）",
-         "mesh": "Mesh 体积重心（均质）",
+LABEL = {"mesh": "Mesh 体积重心（均质）",
          "gb": "国标 GB/T 17245（15 段 · 体表骨突）"}
 EVENT_STYLE = {
     "board_frame": ("起跳板", "#6b7280"),
@@ -64,8 +63,11 @@ def mark_events(axis, meta, cjk, text=True):
 def height_figure(data, meta, path, cjk):
     time = data["time_s"]
     modes = curve_keys(meta)
-    figure, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True,
-                                gridspec_kw={"height_ratios": [3, 1.4, 1.6]})
+    # 差值格只在有 gb 时画：mesh 是唯一的另一条，没有可比的对象就不留空格。
+    paired = "gb" in modes
+    ratios = [3, 1.4, 1.6] if paired else [3, 1.6]
+    figure, axes = plt.subplots(len(ratios), 1, figsize=(13, 10 if paired else 8),
+                                sharex=True, gridspec_kw={"height_ratios": ratios})
     top = axes[0]
     shade_flight(top, meta, cjk)
     for key in modes:
@@ -87,19 +89,21 @@ def height_figure(data, meta, path, cjk):
     top.grid(alpha=0.25)
     mark_events(top, meta, cjk)
 
-    middle = axes[1]
-    shade_flight(middle, meta, cjk, label=False)
-    middle.axhline(0, color="#555", lw=0.8)
-    # Z 不画：固定深度平面下它只承载体厚，mesh 与 root 的 Z 差没有物理含义。
-    for name, column, colour in (("Y", "offset_y_m", "#b3272d"),
-                                 ("X", "offset_x_m", "#4a4a4a")):
-        middle.plot(time, masked(data, column), color=colour, lw=1.2,
-                    label=f"Δ{name}")
-    middle.set_ylabel("mesh - root (m)")
-    middle.legend(loc="upper right", ncol=2, fontsize=9)
-    middle.grid(alpha=0.25)
+    if paired:
+        middle = axes[1]
+        shade_flight(middle, meta, cjk, label=False)
+        middle.axhline(0, color="#555", lw=0.8)
+        # Z 不画：固定深度平面下它只承载体厚，gb 与 mesh 的 Z 差没有物理含义。
+        # 方向与 dive_summary 的 mesh_to_gb 一致（gb − mesh），两处数字能直接对上。
+        for name, axis, colour in (("Y", "y", "#b3272d"), ("X", "x", "#4a4a4a")):
+            middle.plot(time, masked(data, f"gb_{axis}_m")
+                        - masked(data, f"mesh_{axis}_m"),
+                        color=colour, lw=1.2, label=f"Δ{name}")
+        middle.set_ylabel("gb - mesh (m)")
+        middle.legend(loc="upper right", ncol=2, fontsize=9)
+        middle.grid(alpha=0.25)
 
-    bottom = axes[2]
+    bottom = axes[-1]
     shade_flight(bottom, meta, cjk, label=False)
     bottom.axhline(0, color="#555", lw=0.8)
     for key in modes:
@@ -128,8 +132,6 @@ def trajectory_figure(data, meta, path, cjk):
                                cmap="viridis", linewidths=1.8)
     collection.set_array(data["time_s"][:-1][keep])
     left.add_collection(collection)
-    left.plot(masked(data, "root_x_m"), masked(data, "root_y_m"), color="#8a8a8a",
-              lw=0.8, alpha=0.8, zorder=1, label=LABEL["root"] if cjk else "root")
     for key, (name, colour) in EVENT_STYLE.items():
         frame = (meta.get("events") or {}).get(key)
         if frame is None or not (0 <= int(frame) < len(x)) or not good[int(frame)]:
@@ -144,7 +146,9 @@ def trajectory_figure(data, meta, path, cjk):
     left.set_title("Mesh 重心轨迹（颜色＝时间）" if cjk else "mesh COM path")
     left.autoscale_view()
     left.set_aspect("equal", adjustable="datalim")
-    left.legend(loc="lower left", fontsize=8)
+    # 图例里只剩事件点；无 metrics 时一个都没有，空调 legend 会报警告。
+    if left.get_legend_handles_labels()[0]:
+        left.legend(loc="lower left", fontsize=8)
     left.grid(alpha=0.25)
 
     right = axes[1]

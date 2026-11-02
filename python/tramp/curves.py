@@ -1,16 +1,11 @@
-"""五种重心口径的逐帧采样。**这是唯一一处知道"重心怎么算"的地方。**
-
-原先五个脚本各写了一遍同样的循环（提取、体段、反算、渲染、校验），四份两两略有
-差别——加第五种口径要改五个文件。现在只需在 `Sampler._point` 里加一支。
+"""两种重心口径的逐帧采样。**这是唯一一处知道"重心怎么算"的地方。**
 
 | 口径 | 定义 | 特点 |
 | --- | --- | --- |
-| `root` | 绑定骨架根 `Root_M`（骨盆）的世界位置 | 动画师直接 K 的量，逐帧平滑，但它是骨盆不是重心 |
 | `mesh` | 蒙皮网格的均质体积重心（散度定理） | 可变形体，每帧重新积分 |
-| `mujoco` | 仿 MuJoCo `subtree_com`：14 刚体，质量 = 体素体积 × ρ | 刚体近似，质量由网格形状决定 |
-| `anthro` | Dempster/Winter 体段质量比，质心在关节连线上 | 质量由人体测量学表决定，完全不看网格 |
-| `gb` | 国标 GB/T 17245-2004 表 6/7：质量比与质心比例（男/女两套） | 独立于 Dempster 的另一套人体测量学表 |
+| `gb` | 国标 GB/T 17245-2004 表 6/7：质量比与质心比例（男/女两套），质心在关节连线上 | 14 刚体，中国成年人实测统计 |
 
+加口径只需在 `MODES` 加一项、`Sampler._point` 加一支、`MODE_DOC` 写一句定义。
 单位是**厘米**（场景 system unit），Y 轴朝上，右手系。
 """
 import numpy as np
@@ -20,16 +15,11 @@ from ..common import signal as Sig
 from . import scene as F
 from .bodies import RigidBodies
 
-MODES = ("root", "mesh", "mujoco", "anthro", "gb")
-SEGMENTED = ("mujoco", "anthro", "gb")     # 有 14 个体段质心可画的口径
+MODES = ("mesh", "gb")
+SEGMENTED = ("gb",)                        # 有 14 个体段质心可画的口径
 CM_PER_M = 100.0
 MODE_DOC = {
-    "root": "world translation of the bind-skeleton root (pelvis)",
     "mesh": "homogeneous volume centroid of the skinned mesh, per frame",
-    "mujoco": "MuJoCo subtree_com style: 14 rigid bodies, mass from voxelised "
-              "mesh volume x density, segment centroid frozen in the bind pose",
-    "anthro": "Dempster(1955)/Winter(2009) segment mass fractions with centroids "
-              "on joint lines",
     "gb": "GB/T 17245-2004 mass fractions and centroid ratios (Table 6/7), "
           "national adult human inertial parameters",
 }
@@ -69,8 +59,8 @@ def pick_bed(scene, layer, name=None):
 class Sampler:
     """一个已打开的场景 + 它能采出的所有曲线。
 
-    `wanted` 决定建什么：只要 root/mesh 时不碰体素化（省 0.3 s 与 scipy 依赖），
-    要 mujoco/anthro 时才编译 14 段刚体。
+    `wanted` 决定建什么：只要 mesh 时不碰体素化（省 0.3 s 与 scipy 依赖），
+    要 gb 时才编译 14 段刚体。
     """
 
     def __init__(self, scene, wanted=MODES, body=None, bed=None,
@@ -94,26 +84,16 @@ class Sampler:
 
     def _point(self, key, stamp, cache):
         """一种口径在这一帧的位置。`cache` 复用同帧的顶点与体段质心。"""
-        if key == "root":
-            return F.node_translation(self.root_bone, stamp)
         if key == "mesh":
             return cache["mesh"]
         centres = self.segment_centres(key, stamp, cache)
-        masses = (self.bodies.mass_kg if key == "mujoco"
-                  else self.bodies.anthro_mass if key == "anthro"
-                  else self.bodies.gb_mass)
-        return G.weighted_centre(centres, masses)
+        return G.weighted_centre(centres, self.bodies.gb_mass)
 
     def segment_centres(self, key, stamp, cache=None):
-        """`mujoco` / `anthro` / `gb` 的 14 个体段质心，(14, 3)。"""
+        """`gb` 的 14 个体段质心，(14, 3)。"""
         if cache is not None and key in cache:
             return cache[key]
-        if key == "mujoco":
-            centres = self.bodies.world_centres(stamp)
-        elif key == "anthro":
-            centres = self.bodies.anthro_centres(stamp)
-        else:
-            centres = self.bodies.gb_centres(stamp)
+        centres = self.bodies.gb_centres(stamp)
         if cache is not None:
             cache[key] = centres
         return centres
@@ -128,6 +108,7 @@ class Sampler:
           contact   床面形变权重之和（>0 即触床）
           foot      人体最低点 Y
           bed_low   床面最低点 Y
+          pelvis    根骨骼 Root_M 的世界位置——不是重心口径，是反算实际改动的那根骨
           bbox      全片人体包围盒，写成 ("low", "high") 两个 (3,)
           segments  各 SEGMENTED 口径的逐帧 14 段质心，(N, 14, 3)
         """
@@ -141,6 +122,8 @@ class Sampler:
         for name in ("volume", "contact", "foot", "bed_low"):
             if name in extras:
                 out[name] = np.empty(count)
+        if "pelvis" in extras:
+            out["pelvis"] = np.empty((count, 3))
         if "segments" in extras:
             out["segments"] = {key: np.empty((count, len(self.bodies.names), 3))
                                for key in keys if key in SEGMENTED}
@@ -165,6 +148,8 @@ class Sampler:
                 out[key][index] = self._point(key, stamp, cache)
                 if "segments" in extras and key in SEGMENTED:
                     out["segments"][key][index] = cache[key]
+            if "pelvis" in extras:
+                out["pelvis"][index] = F.node_translation(self.root_bone, stamp)
             if "contact" in extras:
                 out["contact"][index] = self.bed.deform_amount(stamp)
             if "bed_low" in extras:
@@ -217,7 +202,7 @@ def flights(contacts, frames=None, include_edges=False):
 
 
 def gravity_report(data, keys, contacts, fps, trim=6):
-    """各口径在腾空段的重力拟合。这是五条曲线唯一的共同物理判据。"""
+    """各口径在腾空段的重力拟合。这是两条曲线唯一的共同物理判据。"""
     windows = flights(contacts)
     dt = 1.0 / fps
     return {

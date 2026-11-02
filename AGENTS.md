@@ -4,7 +4,7 @@
 
 | 你的任务提到… | 那条线 | 入口 | 要读的文件 |
 | --- | --- | --- | --- |
-| 蹦床、`BengChuang_01.fbx`、FBX、骨骼、蒙皮、root/mesh/mujoco/anthro、反算根骨骼、抛物线 | tramp | `scripts/tramp.sh` | `python/tramp/*` |
+| 蹦床、`BengChuang_01.fbx`、FBX、骨骼、蒙皮、mesh/gb、反算根骨骼、抛物线、整体旋转、角动量 | tramp | `scripts/tramp.sh` | `python/tramp/*` |
 | 跳水、`bin.br`、DIVF、replay、HSMR、单目、尺度标定、叠加源视频 | dive | `scripts/dive.sh` | `python/dive/*` |
 | 体积重心公式、抛物线拟合、CSV、光栅器、四格布局、配色 | 共用底座 | — | `python/common/*` |
 | 国标、GB/T 17245、体段质量比、质心相对位置、表 6/表 7 | 两条线共用 | — | `python/common/gb17245.py` |
@@ -17,6 +17,8 @@
 ```
 tramp   extract  -> curves.{csv,json,npz} + markers.fbx    python/tramp/__main__.py:step_extract
         retarget -> retarget/<target>.{fbx,csv,json,npz}   python/tramp/__main__.py:step_retarget
+        spin     -> spin/mesh.{fbx,json,npz}               python/tramp/spin.py（整体旋转修复）
+        spinvideo-> spin/mesh.mp4                          python/tramp/spinvideo.py
         plot     -> curves.png trajectory.png              python/tramp/plots.py
         render   -> render_*.mp4                           python/tramp/video.py
         verify                                             python/tramp/verify.py
@@ -50,7 +52,8 @@ dive  gb   端点是**手工标注的真骨突**，与表 1 严格一致，15 �
 tramp：只改 `python/tramp/curves.py`——`MODES` 加一项、`Sampler._point` 加一支、
 `MODE_DOC` 写一句定义。CSV 列、JSON 口径、图表配色、视频面板、CLI 选项全从 `MODES` 派生。
 
-dive：`python/dive/align.py` 的 `MODES` 加一项 + `Clip._place` 里多算一条。注意 dive
+dive：`python/dive/align.py` 的 `MODES` 加一项 + `Clip._place` 里多算一条，另在
+`scenes.MODE_CN/MODE_SUB`、`plots.LABEL` 各补一项。注意 dive
 的口径可能**缺**（`gb` 要标注文件），所以下游一律遍历 `clip.modes` 而不是 `A.MODES`，
 JSON 里 `modes` 只列实际有的那几条，`plots.curve_keys(meta)` 从 JSON 反推。
 
@@ -70,11 +73,11 @@ JSON 里 `modes` 只列实际有的那几条，`plots.curve_keys(meta)` 从 JSON
 ## 改动后必须跑的
 
 ```bash
-./scripts/tramp.sh extract,plot,verify        # 约 40 s，45 项断言
+./scripts/tramp.sh extract,plot,verify        # 约 2 分钟，33 项断言（反算与旋转修复产物在才查）
 ./scripts/dive.sh extract --frames <某个 bin.br> --check   # 重投影必须是 0.000000 px
 ```
 
-全量（约 4 分 + 45 s）：`./scripts/tramp_full.sh`、`./scripts/dive_full.sh <frames>`。
+全量（约 6 分 + 45 s）：`./scripts/tramp_full.sh`、`./scripts/dive_full.sh <frames>`。
 整目录：`./scripts/dive_batch.sh DIR --skip <pat>`。
 
 ## 数据

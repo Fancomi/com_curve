@@ -1,14 +1,12 @@
-"""14 段刚体：编译期定质量与冻结质心，运行时只做 FK + 加权求和。
+"""14 段刚体：编译期定质量、冻结质心与惯量，运行时只做 FK。
 
-这是 `mujoco` / `anthro` / `gb` 三种口径共用的骨架。三者只在**质量从哪来**上分岔：
+两个用途共用这一套骨架：
 
-  mujoco  质量来自网格自身：绑定姿态的实体体积按体段切开，每段 m = ρV
-          （ρ 取 MuJoCo geom 的默认 1000 kg/m³），段质心冻结在绑定姿态。
-          这就是 MuJoCo 的 `subtree_com`：编译期从 geom 推 inertial，运行时 FK。
-  anthro  质量来自 Dempster/Winter 的体段质量比，与网格无关；段质心按表里的
-          "距近端占段长的比例"落在关节连线上。运动生物力学的经典做法。
-  gb      质量与质心比例来自国标 GB/T 17245-2004（表 6/7），男/女两套值，
-          独立于 Dempster 的另一套人体测量学表。
+  gb      重心口径。质量与质心比例来自国标 GB/T 17245-2004（表 6/7），男/女两套值，
+          段质心按表 7 落在关节连线上，与网格无关。
+  spin    整体旋转修复。要的是每段的**质量分布**（角动量需要惯量），国标只给质量比
+          与质心、不给惯量，所以用绑定姿态的实体体素按段切开，每段 m = ρV（ρ = 1000），
+          段质心与惯量冻结在绑定姿态、逐帧刚体变换。
 """
 import numpy as np
 
@@ -111,10 +109,10 @@ def assign_by_bone_lines(points, joints):
 
 
 class RigidBodies:
-    """绑定姿态编译出的 14 段刚体。逐帧只需 `world_centres` / `world_joints`。"""
+    """绑定姿态编译出的 14 段刚体。逐帧只需 `transforms` / `world_joints`。"""
 
     def __init__(self, scene, node, skin, pitch=VOXEL_PITCH,
-                 density=S.MUJOCO_DENSITY, sex=S.GB_MALE):
+                 density=S.DENSITY, sex=S.GB_MALE):
         root = scene.GetRootNode()
         vertices, joints = bind_pose(node, skin)
         self.names = list(S.NAMES)
@@ -132,17 +130,20 @@ class RigidBodies:
         self.voxel_volume_cm3 = float(len(voxels) * cell)
 
         self.volume_cm3 = np.empty(len(self.names))
-        # 冻结的段质心存在**绑定姿态的世界系**里，配合 bind_inverse 一起用。
+        # 冻结的段质心与惯量存在**绑定姿态的世界系**里，配合 bind_inverse 一起用。
         self.bind_centre = np.empty((len(self.names), 3))
+        self.bind_inertia = np.empty((len(self.names), 3, 3))   # kg·cm²，绕段质心
         for index, name in enumerate(self.names):
             picked = voxels[which == index]
             if not len(picked):
                 raise ValueError(f"体段 {name} 没有分到任何体素")
             self.volume_cm3[index] = len(picked) * cell
             self.bind_centre[index] = picked.mean(0)
+            offset = picked - self.bind_centre[index]
+            with np.errstate(all="ignore"):
+                self.bind_inertia[index] = cell * 1e-6 * density * (
+                    np.eye(3) * (offset ** 2).sum() - offset.T @ offset)
         self.mass_kg = self.volume_cm3 * 1e-6 * density
-        table = S.dempster_mass_fractions()
-        self.anthro_mass = np.array([table[name] for name in self.names])
         self.gb_mass = np.array([S.gb_mass_fractions(sex)[name]
                                  for name in self.names])
         self.drivers, self.bind_inverse = [], []
@@ -170,29 +171,28 @@ class RigidBodies:
         matrix = bind_inverse @ F.matrix_np(node.EvaluateGlobalTransform(stamp))
         return F.transform_points(np.reshape(point, (1, 3)), matrix)[0]
 
-    def world_centres(self, stamp):
-        """各段质心的世界坐标，(14, 3)。
+    def transforms(self, stamp):
+        """各段「绑定世界 -> 当前世界」的刚体变换：(旋转 (14,3,3), 平移 (14,3) cm)。
 
-        `世界质心 = 冻结质心 × 绑定逆 × 当前世界矩阵`。两个矩阵都含旋转，所以段质心
-        随骨骼转动绕关节摆——这正是刚体的行为，与 mesh 口径每帧重新积分体积的区别
-        就在这里。
+        旋转按**列向量**约定（p' = R p + t）返回，从 SDK 的行向量矩阵转置而来——
+        `spin` 的角动量全在 numpy 里算，统一成教科书写法免得每处都想一遍乘法顺序。
         """
-        return np.array([self._rigid(self.bind_centre[i], self.bind_inverse[i],
-                                     driver, stamp)
-                         for i, driver in enumerate(self.drivers)])
+        rotation = np.empty((len(self.drivers), 3, 3))
+        translation = np.empty((len(self.drivers), 3))
+        for i, driver in enumerate(self.drivers):
+            matrix = self.bind_inverse[i] @ F.matrix_np(
+                driver.EvaluateGlobalTransform(stamp))
+            rotation[i] = matrix[:3, :3].T
+            translation[i] = matrix[3, :3]
+        return rotation, translation
 
     def world_joints(self, stamp):
-        """各关节的世界位置，含 DERIVED 的推导点。anthro 口径只需要这个。"""
+        """各关节的世界位置，含 DERIVED 的推导点。gb 口径只需要这个。"""
         out = {name: F.node_translation(node, stamp)
                for name, node in self.joint_nodes.items()}
         for name, (point, inverse, attach) in self.derived.items():
             out[name] = self._rigid(point, inverse, attach, stamp)
         return out
-
-    def anthro_centres(self, stamp):
-        """各段质心，按 Dempster 比例落在关节连线上，(14, 3)。"""
-        centres = S.anthropometric_centres(self.world_joints(stamp))
-        return np.array([centres[name] for name in self.names])
 
     def gb_centres(self, stamp):
         """各段质心，按 GB/T 17245-2004 表 7 比例落在关节连线上，(14, 3)。"""
@@ -202,7 +202,6 @@ class RigidBodies:
     def facts(self, mesh_volume_cm3):
         """写进 JSON 的口径与体段质量表。"""
         fractions = self.volume_cm3 / self.volume_cm3.sum()
-        table = S.dempster_mass_fractions()
         gb_table = S.gb_mass_fractions(self.sex)
         return {
             "voxel_pitch_cm": self.pitch,
@@ -219,7 +218,6 @@ class RigidBodies:
                  "volume_l": round(float(self.volume_cm3[i] / 1000), 4),
                  "mass_kg": round(float(self.mass_kg[i]), 3),
                  "mesh_mass_pct": round(float(fractions[i] * 100), 2),
-                 "dempster_mass_pct": round(table[name] * 100, 2),
                  "gb_mass_pct": round(gb_table[name] * 100, 2)}
                 for i, name in enumerate(self.names)],
         }

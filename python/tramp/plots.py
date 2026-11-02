@@ -2,11 +2,11 @@
 
 三张图，各承载一件事：
 
-  curves.png     五条曲线差多少：高度叠放 / 单段放大 / 三个误差源 / 段质量占比
+  curves.png     两条曲线差多少：高度叠放 / 单段放大 / 全片差值 / 段质量占比
   trajectory.png 轨迹长什么样：X-Y 按时间上色 / 各段腾空的高度-时间曲线叠放
   retarget.png   反算改了什么：被盯曲线 / 骨盆 / Δroot / 垂直速度
 
-放大图只画一段腾空而不是全片：全片 20 s 里几条曲线在 ±25 cm 内高频缠绕，除了
+放大图只画一段腾空而不是全片：全片 20 s 里两条曲线在几厘米内高频缠绕，除了
 "它们很像"读不出别的，而那个结论已经由高度叠放图承担了。
 """
 import numpy as np
@@ -17,10 +17,7 @@ from . import curves as Cv
 from . import stage as St
 
 LABEL = {
-    "root": "根骨骼 Root_M（骨盆）",
     "mesh": "Mesh 体积重心（每帧积分）",
-    "mujoco": "仿 MuJoCo（14 刚体 · 网格质量）",
-    "anthro": "真实人体（Dempster 体段质量）",
     "gb": "国标 GB/T 17245（表 6/7）",
 }
 
@@ -49,71 +46,57 @@ def height_axis(axis, data, meta, keys, cjk):
                   label=LABEL[key] if cjk else key)
     axis.axhline(meta["bed_rest_y_cm"], color=PS.DATUM, ls="--", lw=1.0)
     axis.set_ylabel("高度 Y (cm)" if cjk else "height Y (cm)")
-    axis.set_title("五种口径的重心高度（全片尺度下几乎重合）" if cjk
-                   else "centre-of-mass height, five definitions")
-    axis.legend(loc="lower right", fontsize=8, ncol=2)
+    axis.set_title("两种口径的重心高度（全片尺度下几乎重合）" if cjk
+                   else "centre-of-mass height")
+    axis.legend(loc="lower right", fontsize=8)
     axis.grid(alpha=0.25)
 
 
-def offset_axis(axis, data, meta, keys, cjk):
+def zoom_axis(axis, data, meta, keys, cjk):
     a, b, start, stop = _window(data, meta)
-    axis.axhline(0, color="#555", lw=0.8)
-    for key in keys[1:]:
-        axis.plot(data["time_s"][a:b],
-                  data[f"{key}_y_cm"][a:b] - data["root_y_cm"][a:b],
+    for key in keys:
+        axis.plot(data["time_s"][a:b], data[f"{key}_y_cm"][a:b],
                   color=PS.COLOR[key], lw=1.8, label=LABEL[key] if cjk else key)
     axis.set_xlabel("时间 (s)" if cjk else "time (s)")
-    axis.set_ylabel("相对 root 的高度差 (cm)" if cjk else "minus pelvis (cm)")
-    axis.set_title(f"放大一段腾空（f{start}–{stop}）：三条与骨盆的差" if cjk
-                   else f"one flight (f{start}-{stop}) relative to the pelvis")
-    axis.legend(loc="upper right", fontsize=8)
+    axis.set_ylabel("高度 Y (cm)" if cjk else "height Y (cm)")
+    axis.set_title(f"放大最长的一段腾空（f{start}–{stop}）" if cjk
+                   else f"longest flight (f{start}-{stop})")
+    axis.legend(loc="lower center", fontsize=8)
     axis.grid(alpha=0.25)
 
 
-def residual_axis(axis, data, meta, cjk):
-    """两个误差源分开看：刚体近似的代价 vs 体段密度的代价。"""
-    a, b, _start, _stop = _window(data, meta)
-    stats = meta["pairwise"]
+def gap_axis(axis, data, meta, cjk):
+    """gb − mesh 全片：均质网格与国标体段表的分歧集中在哪些帧。"""
+    entry = meta["pairwise"]["mesh_to_gb"]
+    _bands(axis, data, meta)
     axis.axhline(0, color="#555", lw=0.8)
-    pairs = (("mujoco", "mesh", "mesh_to_mujoco", "刚体近似的代价"),
-             ("anthro", "mujoco", "mujoco_to_anthro", "体段密度的代价"),
-             ("gb", "anthro", "anthro_to_gb", "两套体段表的代价"))
-    for high, low, key, text in pairs:
-        entry = stats[key]
-        label = (f"{high} − {low}：{text}（全片 σ={entry['dy_std_cm']:.2f} cm，"
-                 f"max {entry['dy_max_abs_cm']:.1f}）") if cjk else key
-        axis.plot(data["time_s"][a:b],
-                  data[f"{high}_y_cm"][a:b] - data[f"{low}_y_cm"][a:b],
-                  color=PS.COLOR[high], lw=1.8, label=label)
+    axis.plot(data["time_s"], data["gb_minus_mesh_y_cm"], color=PS.COLOR["gb"],
+              lw=1.2, label=(f"gb − mesh（σ={entry['dy_std_cm']:.2f} cm，"
+                             f"max {entry['dy_max_abs_cm']:.1f}）") if cjk else "gb - mesh")
     axis.set_xlabel("时间 (s)" if cjk else "time (s)")
     axis.set_ylabel("高度差 (cm)" if cjk else "difference (cm)")
-    axis.set_title("同一段腾空：两个误差源分开看" if cjk
-                   else "the two error sources, same flight")
+    axis.set_title("国标 vs 均质网格：高度差" if cjk else "gb minus mesh")
     axis.legend(loc="upper right", fontsize=8)
     axis.grid(alpha=0.25)
 
 
 def mass_axis(axis, facts, cjk):
-    """段质量占比对照：网格体素给的 vs Dempster 表给的 vs 国标表给的。
+    """段质量占比对照：网格体素给的 vs 国标表给的。
 
-    这解释了 anthro 为什么与 mujoco 分歧——躯干占比 38% vs 50%，四肢相应偏重；
-    gb 与 anthro 的躯干占比也差约 10 个百分点（45% vs 55%）。
+    这解释了 gb 与 mesh 为什么有分歧——躯干占比 38%（均质网格）vs 44%（国标）。
     """
     entries = facts["segments"]
     positions = np.arange(len(entries))
-    axis.barh(positions - 0.27, [e["mesh_mass_pct"] for e in entries], height=0.25,
-              color=PS.COLOR["mujoco"], label="网格体素（均质）" if cjk else "voxels")
-    axis.barh(positions, [e["dempster_mass_pct"] for e in entries],
-              height=0.25, color=PS.COLOR["anthro"],
-              label="Dempster 表" if cjk else "Dempster")
-    axis.barh(positions + 0.27, [e["gb_mass_pct"] for e in entries],
-              height=0.25, color=PS.COLOR["gb"],
+    axis.barh(positions - 0.2, [e["mesh_mass_pct"] for e in entries], height=0.36,
+              color=PS.COLOR["mesh"], label="网格体素（均质）" if cjk else "voxels")
+    axis.barh(positions + 0.2, [e["gb_mass_pct"] for e in entries],
+              height=0.36, color=PS.COLOR["gb"],
               label="国标 GB/T 17245" if cjk else "GB/T 17245")
     axis.set_yticks(positions)
     axis.set_yticklabels([e["name"] for e in entries], fontsize=8)
     axis.invert_yaxis()
     axis.set_xlabel("占全身质量 (%)" if cjk else "share of body mass (%)")
-    axis.set_title(f"段质量占比（全身 {facts['total_mass_kg']:.1f} kg "
+    axis.set_title(f"段质量占比（体素全身 {facts['total_mass_kg']:.1f} kg "
                    f"@ ρ={facts['density_kg_m3']:g}）" if cjk
                    else "segment mass share")
     axis.legend(loc="lower right", fontsize=8)
@@ -124,15 +107,15 @@ def curves_figure(data, meta, path, cjk):
     keys = tuple(meta["modes"])
     figure, axes = plt.subplots(2, 2, figsize=(16, 10))
     height_axis(axes[0][0], data, meta, keys, cjk)
-    offset_axis(axes[0][1], data, meta, keys, cjk)
-    residual_axis(axes[1][0], data, meta, cjk)
+    zoom_axis(axes[0][1], data, meta, keys, cjk)
+    gap_axis(axes[1][0], data, meta, cjk)
     mass_axis(axes[1][1], meta["scene"]["rigid_bodies"], cjk)
     gravity = meta["gravity"]["per_curve"]
     summary = "   ".join(f"{k} {gravity[k]['gravity_mean']:+.2f}" for k in keys)
     return PS.finish(figure, path,
-                     (f"蹦床重心：五种计算口径 · {meta['frames'][1]} 帧 @ "
+                     (f"蹦床重心：mesh 与国标两种口径 · {meta['frames'][1]} 帧 @ "
                       f"{meta['fps']:g} fps · 腾空段重力拟合 {summary} m/s²") if cjk
-                     else f"five definitions · gravity fit {summary}")
+                     else f"mesh vs gb · gravity fit {summary}")
 
 
 def trajectory_figure(data, meta, path, cjk):
@@ -151,8 +134,6 @@ def trajectory_figure(data, meta, path, cjk):
                                 cmap="viridis", linewidths=1.6)
     collection.set_array(data["time_s"][:-1])
     left.add_collection(collection)
-    left.plot(data["root_x_cm"], data["root_y_cm"], color="#8a8a8a", lw=0.7,
-              alpha=0.75, zorder=1, label=LABEL["root"] if cjk else "root")
     touching = data["contact_weight"] > 1e-6
     left.scatter(data["mesh_x_cm"][touching], data["mesh_y_cm"][touching], s=12,
                  facecolor="none", edgecolor="#b3272d", lw=0.9, zorder=4,

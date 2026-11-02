@@ -32,7 +32,7 @@ def dense_t_pose(hsmr_lite=None, sex="male"):
 
     `poses=0` 就是零姿态 = T-pose，与标注页面用的完全同一份几何（页面也是这么导的）。
     要 torch，所以只在启用 gb 口径时才调；`__main__._open_landmarks` 会捕获 ImportError
-    并退回只采 root/mesh。
+    并退回只采 mesh。
     """
     import sys
 

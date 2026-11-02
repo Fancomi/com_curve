@@ -4,7 +4,7 @@
 
   * 网格闭合、权重归一 —— 查的是输入 FBX 的性质，同一个文件跑一万次结果一样。
     这两个数已经记在 `curves.json` 的 `scene` 块里，需要时看那里。
-  * Dempster 质量比闭合 —— `segments.dempster_mass_fractions()` 内部已经 raise。
+  * 国标质量比闭合 —— `segments.gb_mass_fractions()` 内部已经 raise。
   * 八面体的体积与重心 —— 教科书用例，写对了就永远不会失败。留下的是它的**反向**
     形式（翻转法向必须被察觉），那条才有内容。
   * 段质心离全身重心 < 1.2 × 身高 —— 阈值宽到只能抓"FK 彻底崩了"，而那种情况
@@ -182,24 +182,15 @@ def verify_bodies(sampler):
           f"{bodies.volume_cm3[0] / bodies.voxel_volume_cm3 * 100:.1f}% vs "
           f"{masses[0] / masses.sum() * 100:.1f}%")
 
-    # 站姿重心高度占身高：抓的是"体段表接错骨"。文献站姿约 55–57%，这个绑定是抬臂
-    # T-pose 会偏高，所以放宽到 62%。接错一整段，比例会立刻掉出区间。
     joints = {**bodies.bind_joints, **S.derive_in_bind(bodies.bind_joints)}
-    centres = S.anthropometric_centres(joints)
-    anthro = G.weighted_centre(
-        np.array([centres[name] for name in bodies.names]), bodies.anthro_mass)
-    ratio = (anthro[1] - bodies.floor_cm) / bodies.height_cm
-    check("anthro 站姿重心高度占身高", 0.55 <= ratio <= 0.62,
-          f"{ratio * 100:.2f}%（文献站姿约 55–57%，抬臂 T-pose 偏高）；同姿态 mesh "
-          f"{(mesh_centre[1] - bodies.floor_cm) / bodies.height_cm * 100:.2f}%，"
-          f"mujoco {(composite[1] - bodies.floor_cm) / bodies.height_cm * 100:.2f}%")
 
     # 国标口径的独立核对。三条，各守不同的东西：
     #
     # 1) 站姿重心高度对上**国标自己的表 7「整体质心」行**。那一行给的是"距头顶点占
     #    身高的百分比"（男 43.8 / 女 44.5），换成距地面就是 56.2 / 55.5——这是国标
     #    自带的、与分段实现无关的基准，比抄文献的 55–57% 硬。放宽到 ±6 个百分点，
-    #    因为这个绑定是抬臂 T-pose（同姿态下 mesh 58.2%、anthro 59.9% 都偏高）。
+    #    因为这个绑定是抬臂 T-pose（同姿态下 mesh 58.2% 也偏高）。抓的是"体段表接错
+    #    骨"：接错一整段，比例会立刻掉出区间。
     #    注意必须减掉 floor_cm：这个模型脚底在 y≈10.6 而不是 0。
     # 2) 男女表值不同，互换 sex 必须让全身重心真的动。
     # 3) 表 2/3 的绝对 mm 值能反解出全躯干质心比例，与 GB_TRUNK_RATIO 对上——
@@ -242,7 +233,7 @@ def verify_bodies(sampler):
 
     # 推导点必须始终贴在所附骨上。这条抓到过真实的 bug：早先 ear_canal 每帧用世界 Y
     # 沿头颈轴插值现算，而 485 帧里有 225 帧人是倒着的、16 帧头颈轴接近水平，插值
-    # 系数过零时爆掉——f91 的耳道跑到 X=5075 cm，把 anthro 那一帧整个带偏 4.2 m。
+    # 系数过零时爆掉——f91 的耳道跑到 X=5075 cm，把那一帧的头颈质心带偏 4.2 m。
     # 绑定姿态自检、质量比闭合、重力拟合**全都过得去**，只有逐帧看幅值才抓得住。
     far, far_frame, far_name = 0.0, None, None
     for frame in range(sampler.first, sampler.last + 1):
@@ -317,12 +308,12 @@ def verify_retarget(src, path, target, contacts):
 
 
 def verify_common_mode(results):
-    """before 基线与各 after 的顶点必须几乎一致——"共模已抵消"的可执行形式。
+    """各反算产物的顶点必须几乎一致——"共模已抵消"的可执行形式。
 
     两端钉住 + 精确 g 之后，抛物线顶点由腾空时间 T 唯一决定（两端等高时升高 gT²/8）。
-    四个产物共用同一组 T 和同一个 g，所以顶点应当只差几厘米。这条守的是一个具体的
-    错误：早先拿**未修正的原动画**当 before，量出 +75 cm，看着像"改盯质心"的巨大
-    效果，其实绝大部分是 T 的共模项。
+    各产物共用同一组 T 和同一个 g，所以顶点应当只差几厘米。这条守的是一个具体的
+    错误：拿**未修正的原动画**去比，量出 +75 cm，看着像"改盯质心"的巨大效果，其实
+    绝大部分是 T 的共模项。
     """
     print("\nbefore/after 共模检查：")
     peaks = {name: data["mesh"][:, 1].max() / 100.0
@@ -331,6 +322,55 @@ def verify_common_mode(results):
     check("各产物的质心顶点几乎一致（共模已抵消）", spread < 0.40,
           "，".join(f"{k} {v:.2f} m" for k, v in peaks.items())
           + f"；极差 {spread * 100:.0f} cm")
+
+
+def verify_spin(before_path, after_path, contacts, windows):
+    """整体旋转修复的产物：只读两个 FBX，角动量用与 `spin.solve` 无关的重采样重算。"""
+    from . import spin
+
+    print(f"\n整体旋转修复（{after_path.name}）：")
+    takes = {}
+    for label, source in (("修正前", before_path), ("修正后", after_path)):
+        manager, scene = F.load(source)
+        try:
+            sampler = Cv.Sampler(scene, ("gb", "mesh"), need_bed=False)
+            joints = [F.find_node(scene.GetRootNode(), name) for name in
+                      ("Hip_L", "Knee_L", "Chest_M", "Shoulder_R", "Elbow_R")]
+            data = sampler.run(wanted=("mesh",), extras=("volume", "foot"))
+            stamps = [sampler.stamp(frame) for frame in data["frames"]]
+            body = spin.body_of(sampler.bodies)
+            rotation, translation = spin.sample(sampler.bodies, stamps)
+            momentum, _com = body.momentum(
+                rotation, body.centres(rotation, translation), 1.0 / sampler.fps)
+            local = np.array([[list(joint.EvaluateLocalRotation(stamp))[:3]
+                               for joint in joints] for stamp in stamps])
+            takes[label] = {**data, "L": momentum, "local": local}
+        finally:
+            manager.Destroy()
+
+    old, new = takes["修正前"], takes["修正后"]
+    frames = new["frames"]
+    com_gap = float(np.abs(new["mesh"] - old["mesh"]).max())
+    check("mesh 质心轨迹不变（绕质心转）", com_gap < 1e-3,
+          f"全片最大偏移 {com_gap:.1e} cm——retarget 的抛物线原样保留")
+    touching = np.zeros(len(frames), bool)
+    for start, stop in contacts:
+        touching[(frames >= start) & (frames <= stop)] = True
+    foot_gap = float(np.abs(new["foot"][touching] - old["foot"][touching]).max())
+    check("触床帧脚底不变", foot_gap < 1e-3, f"最大差 {foot_gap:.1e} cm")
+    local_gap = float(np.abs(new["local"] - old["local"]).max())
+    volume_gap = float(np.abs(new["volume"] - old["volume"]).max())
+    check("关节动作未被改动", local_gap < 1e-9 and volume_gap < 1e-3,
+          f"5 个抽样关节局部旋转最大差 {local_gap:.1e} 度，体积最大差 "
+          f"{volume_gap:.1e} cm³（只改了 Root_M）")
+    # 守恒：每段腾空 L 偏离段均值的平均幅度。原动画 9~26，修正后应 < 1。
+    worst_before = worst_after = 0.0
+    for start, stop in windows:
+        a, b = int(np.searchsorted(frames, start)), int(np.searchsorted(frames, stop))
+        worst_before = max(worst_before, spin.spread(old["L"][a:b + 1]))
+        worst_after = max(worst_after, spin.spread(new["L"][a:b + 1]))
+    check("腾空段全身角动量守恒", worst_after < 1.0,
+          f"各段 L 偏离段均值最大 {worst_before:.1f} -> {worst_after:.2f} kg·m²/s")
 
 
 def run(args):
@@ -357,6 +397,11 @@ def run(args):
             results[path.stem] = verify_retarget(src, path, path.stem, contacts)
         if len(results) > 1:
             verify_common_mode(results)
+        spun = entry.SPIN_DIR / "mesh.fbx"
+        if spun.is_file():
+            meta = P.read_json(entry.CURVES_JSON)
+            verify_spin(entry.RETARGET_DIR / "mesh.fbx", spun, contacts,
+                        meta["gravity"]["flights"])
     else:
         print(f"\n（跳过反算产物校验：没有 {P.display(entry.CURVES_JSON)}）")
 

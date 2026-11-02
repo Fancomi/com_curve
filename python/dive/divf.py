@@ -12,8 +12,8 @@ kp3d_n, fps, flags。之后每帧一条定长记录：
         +40  patch      i32
     float32 顶点块：skin_n×3, skel_n×3, kp3d_n×3
 
-**kp3d 那块是全零**：writer 没把 `PoseResult.kp3d` 搬进来，所以没有真正的关节位置。
-「根骨骼」用 rest pose 上离骨盆最近的一撮顶点的均值代理，见 `align.pelvis_ids`。
+**kp3d 那块是全零**：writer 没把 `PoseResult.kp3d` 搬进来，所以没有真正的关节位置，
+重心只能从 skin 网格积分（`mesh`）或从标注骨突算（`gb`）。
 
 **skel 那块有数据**，是 SKEL 生物力学骨架的表面网格（3271 顶点，`bone_verts_indices`
 给出每个顶点属于哪根骨）。`gb` 口径要读它——国标表 1 的体表骨性标志绝大多数标在骨骼
@@ -31,7 +31,7 @@ LEGACY_FRAME_HEADER_BYTES = 56
 
 
 def load_obj(path):
-    """(顶点, 三角面)。顶点只用来选骨盆代理，几何以 frames.bin 为准。"""
+    """(顶点, 三角面)。顶点只用来核对 skin_n，几何以 frames.bin 为准。"""
     vertices, faces = [], []
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         if line.startswith("v "):

@@ -6,9 +6,11 @@
     plot       CSV      -> outputs/tramp/{curves,trajectory}.png
     render     FBX      -> outputs/tramp/render_<A>_<B>.mp4
     retarget   FBX      -> outputs/tramp/retarget/<target>.{fbx,csv,json,npz,png}
+    spin       retarget/mesh.fbx -> outputs/tramp/spin/mesh.{fbx,json,npz}（整体旋转修复）
+    spinvideo  spin 产物 -> outputs/tramp/spin/mesh.mp4（修复前后，跟踪质心三视角）
     verify     校验全部产物
 
-`extract` 是其余步骤的前提（它写的 JSON 里有触床区间）。
+`extract` 是其余步骤的前提（它写的 JSON 里有触床区间）；`spin` 要先有 `retarget`。
 """
 import argparse
 import sys
@@ -21,13 +23,14 @@ from ..common import plotstyle as PS
 from ..common import signal as Sig
 from ..common import table as T
 from . import curves as Cv
-from . import markers, plots, retarget, scene as F, stage as St
+from . import markers, plots, retarget, scene as F, spin, stage as St
 
-STEPS = ("extract", "plot", "render", "retarget", "verify")
+STEPS = ("extract", "plot", "render", "retarget", "spin", "spinvideo", "verify")
 OUT = P.OUTPUTS / "tramp"
 CURVES_CSV = OUT / "curves.csv"
 CURVES_JSON = OUT / "curves.json"
 RETARGET_DIR = OUT / "retarget"
+SPIN_DIR = OUT / "spin"
 
 
 def _load_scene(args):
@@ -57,7 +60,7 @@ def _columns(data, keys, fps):
 
 
 def step_extract(args):
-    """采五条曲线，写 CSV/JSON/NPZ + 一个带动画的 FBX。"""
+    """采两条曲线，写 CSV/JSON/NPZ + 一个带动画的 FBX。"""
     manager, scene = _load_scene(args)
     try:
         keys = tuple(args.modes)
@@ -149,7 +152,7 @@ def step_render(args):
 
 
 def step_retarget(args):
-    """反算根骨骼。`--target` 选盯哪条曲线；`root` 是 before 基线。"""
+    """反算根骨骼。`--targets` 选盯哪条曲线。"""
     if not CURVES_JSON.is_file():
         raise SystemExit(f"先跑 extract：需要 {P.display(CURVES_JSON)} 里的触床区间")
     contacts = P.read_json(CURVES_JSON)["contacts"]
@@ -159,7 +162,7 @@ def step_retarget(args):
     for target in args.targets:
         manager, scene = F.load(src)
         try:
-            sampler = Cv.Sampler(scene, (target, "root"), args.body, args.bed,
+            sampler = Cv.Sampler(scene, (target,), args.body, args.bed,
                                  args.root_bone, need_bed=False)
             layer = F.base_layer(scene)
             print(f"{src.name}: {sampler.last - sampler.first + 1} 帧 @ "
@@ -167,7 +170,7 @@ def step_retarget(args):
             retarget.check_root_chain(sampler.root_bone, sampler.mode,
                                       np.arange(sampler.first, sampler.last + 1))
 
-            before = sampler.run(wanted=(target, "root"))
+            before = sampler.run(wanted=(target,), extras=("pelvis",))
             frames = before["frames"]
             delta, report = retarget.solve(before[target], frames, contacts,
                                            sampler.fps, args.gravity)
@@ -191,7 +194,7 @@ def step_retarget(args):
 
             # 重采一遍确认被盯曲线真的落在抛物线上。这是校验而不是装饰：闭式解的
             # 正确性依赖"平移根 = 平移该曲线"，重采是对它的端到端确认。
-            after = sampler.run(wanted=(target, "root"))
+            after = sampler.run(wanted=(target,), extras=("pelvis",))
             error = float(np.abs(after[target] - (before[target] + delta)).max())
             print(f"  重采校验：{target} 与目标最大差 {error:.2e} cm")
             if error > 1e-3:
@@ -215,9 +218,9 @@ def step_retarget(args):
             columns = ([("frame", frames),
                         ("time_s", (frames - frames[0]) * dt)]
                        + T.vector_columns(target, before[target], "cm")
-                       + T.vector_columns("root", before["root"], "cm")
+                       + T.vector_columns("root", before["pelvis"], "cm")
                        + T.vector_columns(f"fixed_{target}", after[target], "cm")
-                       + T.vector_columns("fixed_root", after["root"], "cm")
+                       + T.vector_columns("fixed_root", after["pelvis"], "cm")
                        + T.vector_columns("shift", delta, "cm")
                        + [("shift_cm", magnitude),
                           ("vy_mps", speed[:, 1]),
@@ -243,10 +246,109 @@ def step_retarget(args):
             }
             print(f"  wrote {P.display(P.write_json(RETARGET_DIR / f'{target}.json', meta))}")
             np.savez(RETARGET_DIR / f"{target}.npz", frames=frames,
-                     before=before[target], root=before["root"], delta=delta,
-                     after=after[target], fixed_root=after["root"])
+                     before=before[target], root=before["pelvis"], delta=delta,
+                     after=after[target], fixed_root=after["pelvis"])
         finally:
             manager.Destroy()
+
+
+def step_spin(args):
+    """整体旋转修复：每段腾空的全身角动量守恒。输入是 `retarget` 的产物。"""
+    if not CURVES_JSON.is_file():
+        raise SystemExit(f"先跑 extract：需要 {P.display(CURVES_JSON)} 里的腾空区间")
+    windows = P.read_json(CURVES_JSON)["gravity"]["flights"]
+    src = RETARGET_DIR / f"{args.spin_target}.fbx"
+    if not src.is_file():
+        raise SystemExit(f"先跑 retarget --targets {args.spin_target}：需要 {P.display(src)}")
+    SPIN_DIR.mkdir(parents=True, exist_ok=True)
+    manager, scene = F.load(src)
+    try:
+        sampler = Cv.Sampler(scene, ("gb", args.spin_target), args.body, args.bed,
+                             args.root_bone, need_bed=False)
+        layer = F.base_layer(scene)
+        frames = np.arange(sampler.first, sampler.last + 1)
+        dt = 1.0 / sampler.fps
+        root = sampler.root_bone
+        retarget.check_root_chain(root, sampler.mode, frames)
+        pre, xyz = F.euler_pre_rotation(root)
+        if not xyz:
+            raise SystemExit(f"{root.GetName()} 的旋转顺序不是 XYZ，写回键的公式不适用")
+        print(f"{src.name}: {len(frames)} 帧 @ {sampler.fps:g} fps，"
+              f"{len(windows)} 段腾空，枢轴 = {args.spin_target} 质心")
+
+        stamps = [sampler.stamp(f) for f in frames]
+        body = spin.body_of(sampler.bodies)
+        rotation, translation = spin.sample(sampler.bodies, stamps)
+        centres = body.centres(rotation, translation)
+        before = sampler.run(wanted=(args.spin_target,), extras=("volume",))
+        pivot = before[args.spin_target] / Cv.CM_PER_M
+        theta, report = spin.solve(body, rotation, centres, pivot, frames, windows, dt)
+        for entry in report:
+            print(f"    f{entry['frames'][0]:4d}..{entry['frames'][1]:4d} 修正 ≤"
+                  f"{entry['correction_max_deg']:6.1f}°  L 偏差 "
+                  f"{entry['L_before_spread']:6.2f} -> {entry['L_after_spread']:5.2f}")
+
+        euler = retarget.read_keys(root, "LclRotation", layer, frames, sampler.mode)
+        moved = retarget.read_keys(root, "LclTranslation", layer, frames, sampler.mode)
+        euler, moved = spin.root_keys(theta, euler, moved, pre,
+                                      before[args.spin_target])
+        retarget.edit_keys(root, "LclRotation", layer, frames, sampler.mode,
+                           lambda i, c, _old: euler[i, c])
+        retarget.edit_keys(root, "LclTranslation", layer, frames, sampler.mode,
+                           lambda i, c, _old: moved[i, c])
+        scene.GetAnimationEvaluator().Reset()
+
+        # 重采一遍：质心不动、旋转等于 θ，是对"整体转 = 只改根骨骼"的端到端确认。
+        after = sampler.run(wanted=(args.spin_target,), extras=("volume",))
+        com_gap = float(np.abs(after[args.spin_target] - before[args.spin_target]).max())
+        fixed_rotation, fixed_translation = spin.sample(sampler.bodies, stamps)
+        want = np.einsum("nij,nsjk->nsik",
+                         spin.Rot.from_rotvec(theta).as_matrix(), rotation)
+        rotation_gap = float(np.abs(fixed_rotation - want).max())
+        print(f"  重采校验：质心最大偏移 {com_gap:.1e} cm，段旋转与 θ 最大差 "
+              f"{rotation_gap:.1e}")
+        # FBX 曲线键是 float32：Euler 值累计到上千度，单精度只剩 1e-4° 量级，旋转矩阵
+        # 元素差 ~4e-6 是存储精度而不是写错。写错（Pre 乘反、顺序错）会差到 1e-1 以上。
+        if com_gap > 1e-3 or rotation_gap > 1e-4:
+            raise SystemExit("写回的根骨骼键没有还原出求解的整体旋转")
+
+        fbx_path = F.save(manager, scene, SPIN_DIR / f"{args.spin_target}.fbx")
+        print(f"  wrote {P.display(fbx_path)} ({fbx_path.stat().st_size / 1e6:.1f} MB)")
+        lateral = spin.lateral_axis(sampler.bodies)
+        L0, tilt0, rate0 = spin.traces(body, rotation, centres, lateral, dt)
+        L1, tilt1, rate1 = spin.traces(
+            body, fixed_rotation, body.centres(fixed_rotation, fixed_translation),
+            lateral, dt)
+        meta = {
+            "source": str(src), "pivot": args.spin_target, "unit": "kg m^2/s",
+            "fps": sampler.fps, "frames": [int(frames[0]), int(frames[-1])],
+            "method": "per flight, rotate the whole body about the pivot by theta(t) "
+                      "so that the whole-body angular momentum is one constant "
+                      "vector; theta = 0 at both ends; only Root_M keys change",
+            "lambdas": list(spin.LAMBDAS),
+            "segment_mass_kg": round(body.total, 3),
+            "com_shift_cm": com_gap,
+            "correction_max_deg": max(e["correction_max_deg"] for e in report),
+            "flights": report,
+        }
+        print(f"  wrote {P.display(P.write_json(SPIN_DIR / f'{args.spin_target}.json', meta))}")
+        np.savez(SPIN_DIR / f"{args.spin_target}.npz", frames=frames, theta=theta,
+                 fps=sampler.fps,
+                 com=before[args.spin_target], windows=np.array(windows),
+                 L_before=L0, L_after=L1, tilt_before=tilt0, tilt_after=tilt1,
+                 rate_before=rate0, rate_after=rate1)
+    finally:
+        manager.Destroy()
+
+
+def step_spinvideo(args):
+    """spin 的修复前后对比视频。"""
+    from . import spinvideo
+
+    spinvideo.run(args, RETARGET_DIR / f"{args.spin_target}.fbx",
+                  SPIN_DIR / f"{args.spin_target}.fbx",
+                  SPIN_DIR / f"{args.spin_target}.npz",
+                  SPIN_DIR / f"{args.spin_target}.mp4")
 
 
 def step_verify(args):
@@ -272,13 +374,15 @@ def build_parser():
     parser.add_argument("--with-scene", action="store_true",
                         help="extract 额外导一份并进原场景的 FBX（13 MB）")
     # retarget
-    parser.add_argument("--targets", nargs="+", default=["root", "mesh"],
-                        choices=Cv.MODES,
-                        help="retarget 盯哪几条曲线；root 是 before 基线")
+    parser.add_argument("--targets", nargs="+", default=["mesh"],
+                        choices=Cv.MODES, help="retarget 盯哪几条曲线")
     parser.add_argument("--gravity", type=float, default=retarget.GRAVITY_CM,
                         help="重力大小 cm/s²")
+    # spin
+    parser.add_argument("--spin-target", default="mesh", choices=Cv.MODES,
+                        help="spin 修哪个 retarget 产物，也是整体旋转的枢轴")
     # render
-    parser.add_argument("--pair", nargs=2, default=["root", "mesh"],
+    parser.add_argument("--pair", nargs=2, default=["mesh", "gb"],
                         choices=Cv.MODES, metavar=("A", "B"),
                         help="render 对比哪两种口径")
     parser.add_argument("--reference", type=Path, default=None,
@@ -303,7 +407,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     OUT.mkdir(parents=True, exist_ok=True)
     actions = {"extract": step_extract, "plot": step_plot, "render": step_render,
-               "retarget": step_retarget, "verify": step_verify}
+               "retarget": step_retarget, "spin": step_spin,
+               "spinvideo": step_spinvideo, "verify": step_verify}
     chosen = [s.strip() for s in args.steps.split(",") if s.strip()]
     unknown = [s for s in chosen if s not in actions]
     if unknown:

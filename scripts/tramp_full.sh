@@ -1,30 +1,23 @@
 #!/usr/bin/env bash
-# 蹦床线跑一整轮：五条曲线 + 一个 before 基线 + 四个 after + 图 + 三个对比视频。
-# 双击或 `./scripts/tramp_full.sh` 即可，无参数。约 4 分钟。
-#
-# 为什么 before 也要跑一遍反算（--targets 里带 root）：
-#   两端钉住 + 精确 g 之后，抛物线顶点由腾空时间 T 唯一决定（两端等高时升高 gT²/8），
-#   与盯哪条曲线几乎无关——五条曲线各自钉完，顶点都升到 5.3 m 均值，彼此只差 4~9 cm。
-#   拿未修正的原动画当 before，量出的 +75 cm 里绝大部分是 T 这个共模项，不是"改盯
-#   质心"的效果。让 before 与四个 after 共用同一组 T 和同一个 g，共模抵消，剩下的
-#   十几厘米才是真信号。
+# 蹦床线跑一整轮：两条重心曲线 + 两个反算产物 + 旋转修复 + 图 + 对比视频。
+# 双击或 `./scripts/tramp_full.sh` 即可，无参数。约 6 分钟。
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE=./scripts/tramp.sh
 
 $HERE extract
-$HERE retarget --targets root mesh mujoco anthro gb
+$HERE retarget --targets mesh gb
+$HERE spin                                # 输入 retarget/mesh.fbx
 $HERE plot
-$HERE render                              # root vs mesh
-$HERE render --pair mujoco anthro         # 另两种口径，带 14 个体段质心圆
-$HERE render --pair gb anthro             # 两套人体测量学表口径
+$HERE render                              # mesh vs gb，带 14 个体段质心圆
 
-# before/after 对比：--compare 必须跟着 target 走，否则两格里都是"没被约束成抛物线
-# 的那条曲线"，看不出这一版改了什么。
-for target in mesh mujoco anthro gb; do
+# 反算前后：--compare 必须跟着 target 走，否则两格里都是"没被约束成抛物线的那条
+# 曲线"，看不出这一版改了什么。
+for target in mesh gb; do
   $HERE render --src "outputs/tramp/retarget/$target.fbx" \
-    --reference outputs/tramp/retarget/root.fbx --compare "$target" \
-    --labels "before: 骨盆=抛物线" "after: $target 质心=抛物线"
+    --reference inputs/BengChuang_01.fbx --compare "$target" \
+    --labels "before: 原动画" "after: $target 质心=抛物线"
 done
+$HERE spinvideo                           # 旋转修复前后，跟踪质心三视角
 
 $HERE verify

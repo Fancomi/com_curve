@@ -2,7 +2,7 @@
 
 原设计把**根骨骼**（`Root_M`，骨盆）按抛物线去 K，但抛体运动约束的是**质心**而不是
 骨盆——空中挥臂屈体时两者相差可达 26 cm。所以原动画的质心并不走抛物线：实测腾空段
-拟合出 −8.77 m/s²，而骨盆是 −9.10。
+拟合出 −8.77 m/s²。
 
 修正靠一个恰好成立的性质：**平移根骨骼会把整个人刚体平移，被盯的那条曲线随之平移
 同样的量。** `Root_M` 的父链（`WLN/DeformationSystem`）全片是恒等变换，pivot 与偏移
@@ -12,17 +12,9 @@
 
     Δroot(t) = 目标轨迹(t) − 被盯曲线的实际位置(t)
 
-`target` 选盯哪条曲线，这决定产物的含义：
-
-    root                原设计师的意图，但用精确 g。**它是 before 基线。**
-    mesh/mujoco/anthro/gb   四种真质心口径，各是一个 after。
-
-**为什么 before 必须也做一遍。** 两端钉住 + 精确 g 之后，抛物线高度由腾空时间 T 唯一
-决定（两端等高时顶点升高 = gT²/8），与盯哪条曲线几乎无关：实测五条曲线各自钉完，
-顶点都升到 5.3 m 均值，彼此只差 4~9 cm。所以拿"未修正的原动画"当 before 去比 after，
-看到的 +75 cm 里绝大部分是 T 这个共模项。用 `--target root` 产出的 before 与四个
-after 共用同一组 T 和同一个 g，共模抵消，剩下的差（|Δroot| 均值 10~11 cm）才是真正
-由"盯骨盆 vs 盯质心"造成的。
+`target` 选盯哪条曲线：`mesh`（体积重心）或 `gb`（国标）。两者各是一个产物，
+顶点高度由腾空时间 T 唯一决定（两端等高时升高 = gT²/8），与盯哪条几乎无关，彼此只差
+几厘米——`verify` 的共模检查守的就是这件事。
 """
 import numpy as np
 
@@ -85,27 +77,49 @@ def check_root_chain(root_bone, mode, frames):
 
 
 def apply(node, layer, frames, delta, mode):
-    """把 Δ 加到节点三条 LclTranslation 曲线的关键帧上。
+    """把 Δ 加到节点三条 LclTranslation 曲线的关键帧上。"""
+    edit_keys(node, "LclTranslation", layer, frames, mode,
+              lambda index, column, old: old + float(delta[index, column]))
 
-    关键帧与采样帧一一对应（实测这三条曲线各 485 个键、每帧一个、全 eTangentAuto），
-    所以可以按索引直接加。不成立时宁可报错也不要按时间去猜最近的键——错配一帧，
-    修正量会整体偏移一帧，而画面上几乎看不出来。
+
+def read_keys(node, prop, layer, frames, mode):
+    """节点一个 TRS 属性三条曲线的键值 (N, 3)。键与帧的对应校验同 `edit_keys`。"""
+    out = np.empty((len(frames), 3))
+
+    def grab(index, column, old):
+        out[index, column] = old
+        return old
+
+    edit_keys(node, prop, layer, frames, mode, grab, write=False)
+    return out
+
+
+def edit_keys(node, prop, layer, frames, mode, update, write=True):
+    """逐键改写 `prop`（"LclTranslation" / "LclRotation"）的三条曲线：新值 = update(帧序, 轴, 旧值)。
+
+    关键帧与采样帧一一对应（实测 Root_M 的 T/R 六条曲线各 485 个键、每帧一个、全
+    eTangentAuto），所以可以按索引直接改。不成立时宁可报错也不要按时间去猜最近的键——
+    错配一帧，修正量会整体偏移一帧，而画面上几乎看不出来。
     """
     for column, axis in enumerate("XYZ"):
-        curve = node.LclTranslation.GetCurve(layer, axis, False)
+        curve = getattr(node, prop).GetCurve(layer, axis, False)
         if curve is None:
-            raise ValueError(f"{node.GetName()} 没有 LclTranslation.{axis} 曲线")
+            raise ValueError(f"{node.GetName()} 没有 {prop}.{axis} 曲线")
         if curve.KeyGetCount() != len(frames):
             raise ValueError(
-                f"{node.GetName()}.{axis} 有 {curve.KeyGetCount()} 个键，"
+                f"{node.GetName()}.{prop}.{axis} 有 {curve.KeyGetCount()} 个键，"
                 f"采样了 {len(frames)} 帧，对不上")
-        curve.KeyModifyBegin()
-        for index in range(curve.KeyGetCount()):
-            at = int(curve.KeyGetTime(index).GetFrameCount(mode))
-            if at != int(frames[index]):
+        if write:
+            curve.KeyModifyBegin()
+        try:
+            for index in range(curve.KeyGetCount()):
+                at = int(curve.KeyGetTime(index).GetFrameCount(mode))
+                if at != int(frames[index]):
+                    raise ValueError(f"{node.GetName()}.{prop}.{axis} 第 {index} 个键在 "
+                                     f"f{at}，采样的是 f{frames[index]}")
+                value = update(index, column, curve.KeyGetValue(index))
+                if write:
+                    curve.KeySetValue(index, float(value))
+        finally:
+            if write:
                 curve.KeyModifyEnd()
-                raise ValueError(f"{node.GetName()}.{axis} 第 {index} 个键在 f{at}，"
-                                 f"采样的是 f{frames[index]}")
-            curve.KeySetValue(index,
-                              curve.KeyGetValue(index) + float(delta[index, column]))
-        curve.KeyModifyEnd()

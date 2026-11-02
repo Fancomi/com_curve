@@ -1,7 +1,7 @@
 """蹦床线的四格对照视频。
 
 两种用法共用一套 compose：
-  同一场景比两种口径   `--pair root mesh`
+  同一场景比两种口径   `--pair mesh gb`
   两个文件比同一口径   `--reference before.fbx --compare mesh`
 
 after 在右、before 在左（时间顺序＝阅读顺序）。两格都用虚线 + 小空心环叠出根骨骼位置：
@@ -33,7 +33,7 @@ class Take:
                                 min(end, self.sampler.last) + 1)
         self.data = self.sampler.run(self.frames, wanted,
                                      extras=("volume", "contact", "bbox",
-                                             "segments", "bed_low"))
+                                             "segments", "bed_low", "pelvis"))
         self.bed_rest = float(np.median(self.data["bed_low"]))
         self.stamps = [self.sampler.stamp(f) for f in self.frames]
 
@@ -69,7 +69,7 @@ def _panels(args, takes, pair, labels):
         take = takes[source]
         specs.append(Grid.panel(
             label, St.MODE_SUB[compare], colour, take.data[compare],
-            source=source, aux=take.data["root"], aux_colour=St.AUX_TINT,
+            source=source, aux=take.data["pelvis"], aux_colour=St.AUX_TINT,
             aux_label="骨盆", value=St.metres,
             segments=take.data["segments"].get(compare),
             weights=_weights(take, compare), full_scale=St.MASS_FULL_SCALE))
@@ -80,10 +80,7 @@ def _weights(take, key):
     """体段质心圆的权重：归一化的质量比例，各格共用满刻度才能比大小。"""
     if key not in Cv.SEGMENTED:
         return None
-    bodies = take.sampler.bodies
-    masses = (bodies.mass_kg if key == "mujoco"
-              else bodies.anthro_mass if key == "anthro"
-              else bodies.gb_mass)
+    masses = take.sampler.bodies.gb_mass
     return masses / masses.sum()
 
 
@@ -92,8 +89,7 @@ def run(args):
     if args.reference is None and pair[0] == pair[1]:
         raise SystemExit("--pair 的两个口径要不同")
     compare = args.compare or pair[0]
-    wanted = (pair if args.reference is None
-              else tuple(dict.fromkeys((compare, "root"))))
+    wanted = pair if args.reference is None else (compare,)
 
     out = P.OUTPUTS / "tramp"
     tag = (f"{pair[0]}_{pair[1]}" if args.reference is None
@@ -124,8 +120,7 @@ def run(args):
             print(f"{src.name}: 渲染 f{main.frames[0]}..{main.frames[-1]}"
                   f"（{main.count} 帧），口径 {pair[0]} vs {pair[1]}")
         if main.sampler.bodies is not None:
-            print(f"  体段刚体：{main.sampler.bodies.voxel_count} 体素，"
-                  f"全身 {main.sampler.bodies.mass_kg.sum():.1f} kg")
+            print(f"  体段刚体：{main.sampler.bodies.voxel_count} 体素")
 
         specs, gap_label = _panels(args, takes, pair, labels)
         # 相机范围要覆盖**所有** take：两个版本共用一套刻度，否则"修正后高了 75 cm"

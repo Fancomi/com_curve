@@ -5,21 +5,20 @@
 #
 # STEPS 逗号分隔、按给出顺序执行：
 #   extract   FBX -> outputs/tramp/curves.{csv,json,npz} + markers.fbx
-#             五种重心口径一次算完：root(骨盆) / mesh(体积重心) /
-#             mujoco(14刚体·网格质量) / anthro(14刚体·Dempster质量) /
-#             gb(14刚体·GB/T 17245 国标质量)
+#             两种重心口径：mesh(体积重心) / gb(14刚体·GB/T 17245 国标质量)
 #   retarget  反算根骨骼，让被盯的曲线走完美抛物线
 #             -> outputs/tramp/retarget/<target>.{fbx,csv,json,npz}
-#             --targets root 是 before 基线（原设计的意图，但用精确 g）
+#   spin      整体旋转修复：每段腾空全身角动量守恒（输入 retarget/mesh.fbx）
+#             -> outputs/tramp/spin/mesh.{fbx,json,npz}
+#   spinvideo 旋转修复前后对比 -> outputs/tramp/spin/mesh.mp4
 #   plot      CSV -> curves.png / trajectory.png，以及每个 retarget 产物一张图
 #   render    四格对照视频 -> outputs/tramp/render_<A>_<B>.mp4
-#   verify    独立校验：解析体、蒙特卡洛、体段恒等式、反算产物
+#   verify    独立校验：解析体、蒙特卡洛、体段恒等式、反算与旋转修复产物
 #
 # 常用：
-#   ./scripts/tramp.sh extract,plot                      # 五条曲线 + 图
-#   ./scripts/tramp.sh render                            # root vs mesh 视频
-#   ./scripts/tramp.sh render --pair mujoco anthro       # 另两种口径
-#   ./scripts/tramp.sh retarget --targets root mesh mujoco anthro gb
+#   ./scripts/tramp.sh extract,plot                      # 两条曲线 + 图
+#   ./scripts/tramp.sh render                            # mesh vs gb 视频
+#   ./scripts/tramp.sh retarget,spin,spinvideo           # 质心抛物线 + 旋转修复
 #   ./scripts/tramp.sh verify
 #
 # 源 FBX 默认找 inputs/BengChuang_01.fbx，其次仓库上一级；用 --src 显式指定。

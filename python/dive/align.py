@@ -40,10 +40,8 @@ SOURCE_W = 1920.0
 SOURCE_H = 1080.0
 GRAVITY = 9.81
 SCALE_CHOICES = ("metrics", "hsmr", "gravity")
-MODES = ("root", "mesh", "gb")
+MODES = ("mesh", "gb")
 MODE_DOC = {
-    "root": "pelvis proxy: mean of a fixed vertex set near the anatomical pelvis "
-            "in the rest pose (frames.bin has no real root joint)",
     "mesh": "homogeneous volume centroid of the skin mesh, per frame",
     "gb": "GB/T 17245-2004 15-segment model: masses from Table 6, centroids at "
           "Table 7 ratios on hand-labelled surface bony landmarks",
@@ -75,17 +73,6 @@ def project_source(local, record):
         * bbox[3] / patch,
     ])
     return out[0] if np.ndim(local) == 1 else out
-
-
-def pelvis_ids(rest, faces, count=48):
-    """rest pose 上靠近解剖骨盆的固定顶点集（全片共用同一组 index）。
-
-    体积重心偏下腹，骨盆比它略高、略靠后。取固定集合而不是每帧重选，才能保证 root
-    曲线的抖动来自姿态而不是选点。
-    """
-    _volume, centre = G.volume_centroid(rest, faces)
-    target = np.array([0.0, centre[1] + 0.08, centre[2] - 0.04])
-    return np.sort(np.argsort(np.linalg.norm(rest - target, axis=1))[:count])
 
 
 def place_on_plane(local, record, scale, scale_hsmr):
@@ -152,12 +139,10 @@ class Clip:
     """
 
     def __init__(self, frames_path, skin_obj, metrics, scale_mode="metrics",
-                 fps=None, trim=8, pelvis_count=48, verbose=True,
-                 landmarks=None):
+                 fps=None, trim=8, verbose=True, landmarks=None):
         raw = divf.read(frames_path)
         self.header = divf.header(raw)
         self.rest, self.faces = divf.load_obj(skin_obj)
-        self.pelvis = pelvis_ids(self.rest, self.faces, pelvis_count)
         self.metrics = metrics or {}
         self.fps = float(fps or self.metrics.get("fps")
                          or self.header["fps"] or 60.0)
@@ -190,7 +175,6 @@ class Clip:
             except ValueError:
                 centre = skin.mean(0)
             self.local["mesh"][index] = centre
-            self.local["root"][index] = skin[self.pelvis].mean(0)
             if self.sampler is not None:
                 self.local["gb"][index] = self.sampler.centre(
                     {"skin": skin, "skel": record["skel"]})
@@ -273,7 +257,7 @@ class Clip:
         return (left, right)
 
     def _place(self, scale):
-        """按给定 s 放置全片。返回 {meshes, root, mesh, gb, volume, valid}。"""
+        """按给定 s 放置全片。返回 {meshes, mesh, gb, volume, valid}（gb 仅在有标注时）。"""
         out = {key: np.full((self.count, 3), np.nan) for key in self.modes}
         out.update({"volume": np.full(self.count, np.nan),
                     "valid": np.zeros(self.count, np.int8),
@@ -285,7 +269,6 @@ class Clip:
                     placed, self.faces)
             except ValueError:
                 out["mesh"][index] = placed.mean(0)
-            out["root"][index] = placed[self.pelvis].mean(0)
             if self.sampler is not None:
                 # 骨骼层也要放到同一个平面上：`place_on_plane` 用的是**该顶点自己**
                 # 在源视频里的投影，所以两层各放一次，结果自然同一坐标系。
@@ -391,7 +374,7 @@ class Clip:
                  "water_entry_frame")}
 
     def smooth_curves(self, n_ctrl=DEFAULT_BEZIER_CTRL):
-        """抛物线拟合之后、渲染之前：对 root/mesh 曲线做轻度贝塞尔重采样。
+        """抛物线拟合之后、渲染之前：对 `modes` 里每条曲线做轻度贝塞尔重采样。
 
         只动曲线，不动 `meshes`——人体姿态仍是原始放置结果；变的是轨迹线、高度
         读数和 overlay 面板。先 `fit_flight()` 再调本方法：腾空 g 仍用未平滑曲线，

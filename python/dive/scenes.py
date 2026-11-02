@@ -23,9 +23,8 @@ from . import align as A
 VIEWS = (("front", 0, 2, +1), ("side", 2, 0, +1))
 VIEW_CN = {"front": "正视", "side": "侧视"}
 VIEW_SUB = {"front": "与源视频投影一致", "side": "仅体厚 · 单目无深度"}
-MODE_CN = {"root": "骨盆代理", "mesh": "Mesh 重心", "gb": "国标 15 段"}
-MODE_SUB = {"root": "rest 邻域顶点均值", "mesh": "均质体积重心",
-            "gb": "GB/T 17245 · 体表骨突"}
+MODE_CN = {"mesh": "Mesh 重心", "gb": "国标 15 段"}
+MODE_SUB = {"mesh": "均质体积重心", "gb": "GB/T 17245 · 体表骨突"}
 
 MARKER = {key: PS.bgr(key) for key in A.MODES}
 # 正交渲染用淡蓝白；叠在源视频上换紫罗兰——这个场馆墙是米白、池是青，淡蓝两边都撞，
@@ -175,10 +174,14 @@ def draw_hud(frame, painter, curves, meta, index, valid):
                       f" m/s2   顶点 {block.get('apex_m', 0):.2f} m",
                       (198, 196, 192), "small"))
     if valid:
-        mesh_y, root_y = curves["mesh_y"][index], curves["root_y"][index]
-        lines.append((24, top + 78,
-                      f"mesh Y {mesh_y:+.2f} m    骨盆 Y {root_y:+.2f} m    差 "
-                      f"{(mesh_y - root_y) * 100:+.1f} cm", MARKER["mesh"], "small"))
+        mesh_y = curves["mesh_y"][index]
+        text = f"mesh Y {mesh_y:+.2f} m"
+        # gb 可能没采（无标注），也可能该帧没算出来；两种情况都只报 mesh。
+        gb_y = curves["gb_y"][index] if "gb_y" in curves else np.nan
+        if np.isfinite(gb_y):
+            text += (f"    国标 Y {gb_y:+.2f} m    差 "
+                     f"{(gb_y - mesh_y) * 100:+.1f} cm")
+        lines.append((24, top + 78, text, MARKER["mesh"], "small"))
     else:
         lines.append((24, top + 78, "该帧无 mesh（入水后）", MUTED, "small"))
     for name, key in EVENT_KEYS:
